@@ -22,7 +22,7 @@ flowchart TD
 
     pacmanostree --> ostree
     pacmanostree --> bootc
-    pacmanostree --> libdnf
+    pacmanostree --> alpm
 ```
 # Roadmap
 - [X] Create github repo
