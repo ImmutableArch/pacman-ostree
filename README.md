@@ -4,4 +4,4 @@
 </p>
 
 # 
-pacman-ostree is a Hybrid OSTree Image/Pacman Package installer written in C, inspired by rpm-ostree
+pacman-ostree is a Hybrid OSTree Image/Pacman Package installer ⚛️/📦 written in C, inspired by rpm-ostree
