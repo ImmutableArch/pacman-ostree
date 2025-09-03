@@ -11,9 +11,6 @@ flowchart TD
         status, upgrade, rollback
         package layering
         initramfs --enable"] 
-    bootc["bootc (image system)
-        fetch bootable container images
-        transactional upgrades and rollbacks"]
     ostree["ostree (image system)
         fetch ostree repositories
         transactional upgrades and rollbacks"]
@@ -21,7 +18,6 @@ flowchart TD
         "]
 
     pacmanostree --> ostree
-    pacmanostree --> bootc
     pacmanostree --> alpm
 ```
 # Roadmap
