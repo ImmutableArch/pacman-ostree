@@ -4,7 +4,7 @@
 </p>
 
 # 
-pacman-ostree is a Hybrid OSTree Image/Pacman Package installer ⚛️/📦 written in C, inspired by rpm-ostree
+pacman-ostree is a Hybrid OSTree Image/Pacman Package installer ⚛️/📦 written in Rust, inspired by rpm-ostree
 ```mermaid
 flowchart TD
     pacmanostree["pacman-ostree (daemon + CLI)
