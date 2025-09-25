@@ -14,15 +14,17 @@ flowchart TD
     ostree["ostree (image system)
         fetch ostree repositories
         transactional upgrades and rollbacks"]
-    alpm["alpm (Arch Linux Package Managent) ties together
+    pacman["pacman (Arch Linux Package Manager)  package managent
         "]
 
     pacmanostree --> ostree
-    pacmanostree --> alpm
+    pacmanostree --> pacman
 ```
 # Roadmap
 - [X] Create github repo
+- [ ] Add pacman helpers on rust
+- [ ] Add compose function
 - [ ] Add base function (commit, deploy)
-- [ ] Add alpm package layering
+- [ ] Add pacman package layering
 - [ ] Add upgrade function
 - [ ] Add Deamon (pacman-ostreed)
