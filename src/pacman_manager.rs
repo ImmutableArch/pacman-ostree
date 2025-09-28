@@ -1,7 +1,8 @@
 // Pacman Helper functions
 use std::process::Command;
+use std::path::{Path, PathBuf};
 
-pub fn install(root: &str, cache: &str, packages: &str)
+pub(crate) fn install(root: &Path, cache: &str, packages: &[String])
 {
     println!("Downloading and Installing packages...");
     let pacman = Command::new("pacman")
@@ -9,12 +10,12 @@ pub fn install(root: &str, cache: &str, packages: &str)
         .arg("-r").arg(root)                  // set root
         .arg(format!("--cachedir={}", cache)) // set cache dir
         .arg("--noconfirm")                   // skip prompts
-        .arg(packages)
+        .args(packages)
         .status()
         .expect("Failed to install packages");
 }
 
-pub fn remove(root: &str, cache: &str, packages: &str)
+pub(crate) fn remove(root: &Path, cache: &str, packages: &[String])
 {
     println!("Removing packages...");
     let pacman = Command::new("pacman")
@@ -22,7 +23,7 @@ pub fn remove(root: &str, cache: &str, packages: &str)
     .arg("-r").arg(root)
     .arg(format!("--cachedir={}", cache))
     .arg("--noconfirm")
-    .arg(packages)
+    .args(packages)
     .status()
     .expect("Failed to remove packages");
 }
