@@ -27,3 +27,15 @@ pub(crate) fn remove(root: &Path, cache: &str, packages: &[String])
     .status()
     .expect("Failed to remove packages");
 }
+
+pub(crate) fn pacstrap_install(root: &Path, packages: &[String])
+{
+    println!("Installing packages to Rootfs...");
+    let pacstrap = Command::new("pacstrap")
+    .arg(root)
+    .arg("--noconfirm")
+    .args(packages)
+    .status()
+    .expect("Failed to install packages to rootfs");
+
+}

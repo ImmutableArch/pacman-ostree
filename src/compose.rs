@@ -117,7 +117,7 @@ fn prepare_rootfs(config: &ConfigYaml) -> std::io::Result<TempDir>
 fn install_filesystem(rootfs: &Path, packages: &[String]) -> std::io::Result<()>
 {
     println!("Installing packages to rootfs");
-    pacman_manager::install(&rootfs, "/var/cache/pacman/pkg", packages); //Install packages
+    pacman_manager::pacstrap_install(&rootfs, packages); //Install packages
     let dirs_to_create = [
         "boot",
         "sysroot",
