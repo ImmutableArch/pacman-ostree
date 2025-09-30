@@ -538,7 +538,7 @@ pub(crate) fn run(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()>
     let cancellable = gio::Cancellable::NONE;
     let repo = ostree::Repo::open_at(libc::AT_FDCWD, &opts.ostree_repo.as_str(), cancellable)?;
     let commit = generate_commit_from_rootfs(&repo, rootfs_path, modifier, Some(&creation_time))?;
-    export_to_archive(&repo, &commit, opts); // Export to OCI
+    export_to_archive(&repo, &commit, opts)?; // Export to OCI
     Ok(())
 }
 
