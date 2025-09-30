@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             // Wczytanie YAML i dalsza logika
             let config = compose::yaml_parse(opts.manifest.as_str())?;
-            compose::run(&config);
+            compose::run(&config, &opts);
 
             // Tutaj dalsze kroki: instalacja pakietów, OSTree commit itd.
         }
