@@ -112,30 +112,29 @@ pub fn yaml_parse(path: &str) -> Result<ConfigYaml, Box<dyn Error>> {
     Ok(config)
 }
 
-fn prepare_rootfs(config: &ConfigYaml, ostree_repo: &Utf8PathBuf) -> Result<TempDir>
-{
-    let tmp_dir = TempDir::new()?; // tworzy unikalny katalog w /tmp
+fn prepare_rootfs(config: &ConfigYaml, ostree_repo: &Utf8PathBuf) -> Result<TempDir> {
+    let tmp_dir = TempDir::new()?; // creates unique dir in /tmp
     println!("Temporary rootfs directory created at: {:?}", tmp_dir.path());
-    // sprawdź ostree_repo
-    if !ostree_repo.exists() {
-        anyhow::bail!("OSTree repo path does not exist: {}", ostree_repo);
-    }
-    if !ostree_repo.is_dir() {
-        anyhow::bail!("OSTree repo path is not a directory: {}", ostree_repo);
-    }
-    println!("Using OSTree repo at {}", ostree_repo);
+
     let pacman_dir = "var/lib/pacman";
     let path = tmp_dir.path().join(pacman_dir);
-    fs::create_dir(path);
-    install_filesystem(tmp_dir.path(), &config.packages)?;
-    //Jeżeli ścieszka ostree_repo nie istnieje zakończ z błędem
+    fs::create_dir_all(&path).with_context(|| format!("creating pacman dir at {:?}", path))?;
+
+    // Install files, propagate errors
+    install_filesystem(tmp_dir.path(), &config.packages)
+        .context("Failed to install filesystem (pacstrap)")?;
+
     Ok(tmp_dir)
 }
 
-fn install_filesystem(rootfs: &Path, packages: &[String]) -> std::io::Result<()>
-{
-    println!("Installing packages to rootfs");
-    pacman_manager::pacstrap_install(&rootfs, packages); //Install packages
+fn install_filesystem(rootfs: &Path, packages: &[String]) -> Result<()> {
+    println!("Installing packages to rootfs at {:?}", rootfs);
+
+    // call pacstrap_install from pacman_manager (now returns Result)
+    crate::pacman_manager::pacstrap_install(rootfs, packages)
+        .context("pacstrap_install failed")?;
+
+    // create required dirs (if not existing)
     let dirs_to_create = [
         "boot",
         "sysroot",
@@ -144,15 +143,21 @@ fn install_filesystem(rootfs: &Path, packages: &[String]) -> std::io::Result<()>
     ];
     for dir in dirs_to_create {
         let path = rootfs.join(dir);
-        fs::create_dir_all(&path)?;
+        fs::create_dir_all(&path)
+            .with_context(|| format!("creating dir {:?}", path))?;
     }
+
+    // remove unwanted dirs
     let dirs_to_remove = ["var/log", "home", "root", "usr/local", "srv"];
     for dir in dirs_to_remove {
         let path = rootfs.join(dir);
         if path.exists() {
-            fs::remove_dir_all(&path)?;
+            fs::remove_dir_all(&path)
+                .with_context(|| format!("removing dir {:?}", path))?;
         }
     }
+
+    // create symlinks
     let symlinks = [
         ("var/home", "home"),
         ("var/roothome", "root"),
@@ -165,22 +170,36 @@ fn install_filesystem(rootfs: &Path, packages: &[String]) -> std::io::Result<()>
         let target_path = rootfs.join(target);
         let link_path = rootfs.join(link_name);
 
-        // Usuń istniejący link jeśli istnieje
         if link_path.exists() {
-            fs::remove_file(&link_path)?;
+            // remove existing file/symlink before creating
+            fs::remove_file(&link_path)
+                .with_context(|| format!("removing existing link {:?}", link_path))?;
         }
-
-        unix_fs::symlink(&target_path, &link_path)?;
+        unix_fs::symlink(&target_path, &link_path)
+            .with_context(|| format!("creating symlink {:?} -> {:?}", link_path, target_path))?;
     }
 
+    // attempt to strip usermeta (propagate error)
     let mut info = XattrRemovalInfo::default();
-    strip_usermeta(&rootfs, &mut info);
-    if info.count > 0
-    {
+    strip_usermeta(&rootfs, &mut info)
+        .with_context(|| format!("strip_usermeta on {:?}", rootfs))?;
+    if info.count > 0 {
         eprintln!("Found unhandled xattrs in files: {}", info.count);
-        for attr in info.names
-        {
+        for attr in info.names {
             eprintln!("  {attr:?}");
+        }
+    }
+
+    // Debug: show top-level contents to help debugging when user said "nothing written"
+    println!("Rootfs top-level after pacstrap:");
+    match std::fs::read_dir(rootfs) {
+        Ok(rd) => {
+            for e in rd.flatten().take(50) {
+                println!(" - {:?}", e.file_name());
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to list rootfs after install: {e}");
         }
     }
 
@@ -435,7 +454,9 @@ fn generate_commit_from_rootfs(
     let cancellable = gio::Cancellable::NONE;
     let tx = repo.auto_transaction(cancellable)?;
 
-    let policy = ostree::SePolicy::new_at(libc::AT_FDCWD, cancellable)?; // rootfs -> AT_FDCWD, jeśli potrzebujesz
+    let rootfs_dir = File::open(rootfs.as_std_path())
+    .context("Opening rootfs dir for SePolicy")?;
+    let policy = ostree::SePolicy::new_at(rootfs_dir.as_raw_fd(), cancellable)?;
     modifier.set_sepolicy(Some(&policy));
 
     let root_dirmeta = create_root_dirmeta(rootfs.as_std_path(), &policy)?;
@@ -485,14 +506,16 @@ fn generate_commit_from_rootfs(
     postprocess_mtree(repo, &root_mtree)?;
 
     let ostree_root = repo.write_mtree(&root_mtree, cancellable)?;
-    let ostree_root = ostree_root.downcast_ref::<ostree::RepoFile>().unwrap();
+    let ostree_root = ostree_root
+        .downcast_ref::<ostree::RepoFile>()
+        .ok_or_else(|| anyhow::anyhow!("Failed to cast to RepoFile"))?;
     let creation_time: u64 = creation_time
         .as_ref()
         .map(|t| t.timestamp())
         .unwrap_or_default()
         .try_into()
         .context("Parsing creation time")?;
-    let commit = repo.write_commit_with_time(
+    let commit = match repo.write_commit_with_time(
         None,
         None,
         None,
@@ -500,13 +523,20 @@ fn generate_commit_from_rootfs(
         ostree_root,
         creation_time,
         cancellable,
-    )?;
-
-    tx.commit(cancellable)?;
+    ) {
+        Ok(c) => {
+            tx.commit(cancellable)
+                .context("Committing transaction")?;
+            c
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!("Commit failed: {e}"));
+        }
+    };
     Ok(commit.into())
 }
 
-fn export_to_archive(
+async fn export_to_archive(
     repo: &ostree::Repo,
     commit: &str,
     opts: &ComposeImageOpts
@@ -519,27 +549,50 @@ fn export_to_archive(
    let mut export_opts = ostree_container::ExportOpts::default();
    let config = ostree_container::Config::default();
     export_opts.max_layers = opts.max_layers; // tu już pasuje Option<NonZeroU32>
-    ostree_container::encapsulate(repo, commit, &config, Some(export_opts), &oci_dest);
+    ostree_container::encapsulate(repo, commit, &config, Some(export_opts), &oci_dest)
+    .await
+    .context("Exporting to OCI failed")?;
     Ok(())
 }
 
-pub(crate) fn run(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()>
-{
+pub(crate) fn run(config: &ConfigYaml, opts: &ComposeImageOpts) {
+    if let Err(e) = run_inner(config, opts) {
+        eprintln!("Błąd: {:?}", e);
+        std::process::exit(1);
+    }
+}
+
+fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
+    if !opts.ostree_repo.exists() {
+        return Err(anyhow!("OSTree repo path does not exist: {}", opts.ostree_repo));
+    }
+    if !opts.ostree_repo.is_dir() {
+        return Err(anyhow!("OSTree repo path is not a directory: {}", opts.ostree_repo));
+    }
+
+    println!("Using OSTree repo at {}", opts.ostree_repo);
+
     let _rootfs = prepare_rootfs(config, &opts.ostree_repo)?;
     let rootfs_path: &Utf8Path = Utf8Path::from_path(_rootfs.path())
-    .context("Rootfs path is not valid UTF-8")?;
+        .context("Rootfs path is not valid UTF-8")?;
+
     let modifier = ostree::RepoCommitModifier::new(
-            ostree::RepoCommitModifierFlags::SKIP_XATTRS
-                | ostree::RepoCommitModifierFlags::CANONICAL_PERMISSIONS,
-                None,
-        );
+        ostree::RepoCommitModifierFlags::SKIP_XATTRS
+            | ostree::RepoCommitModifierFlags::CANONICAL_PERMISSIONS,
+        None,
+    );
+
     let now_utc: DateTime<Utc> = Utc::now();
-    let creation_time: DateTime<FixedOffset> = now_utc.into(); // konwersja na FixedOffset
-    let cancellable = gio::Cancellable::NONE;
-    let repo = ostree::Repo::open_at(libc::AT_FDCWD, &opts.ostree_repo.as_str(), cancellable)?;
+    let creation_time: DateTime<FixedOffset> = now_utc.into();
+
+    let repo = ostree::Repo::open_at(libc::AT_FDCWD, &opts.ostree_repo.as_str(), gio::Cancellable::NONE)?;
     let commit = generate_commit_from_rootfs(&repo, rootfs_path, modifier, Some(&creation_time))?;
-    export_to_archive(&repo, &commit, opts)?; // Export to OCI
+
+    export_to_archive(&repo, &commit, opts);
+
+    println!("✅ Commit {commit} wyeksportowany do {}", opts.output);
     Ok(())
 }
+
 
 
