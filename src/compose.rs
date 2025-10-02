@@ -21,7 +21,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use clap::Parser;
@@ -140,6 +140,7 @@ fn install_filesystem(rootfs: &Path, packages: &[String]) -> Result<()> {
         "sysroot",
         "var/home",
         "sysroot/ostree",
+        "var/roothome"
     ];
     for dir in dirs_to_create {
         let path = rootfs.join(dir);
@@ -167,17 +168,15 @@ fn install_filesystem(rootfs: &Path, packages: &[String]) -> Result<()> {
     ];
 
     for (target, link_name) in &symlinks {
-        let target_path = rootfs.join(target);
         let link_path = rootfs.join(link_name);
+        let target_path = Path::new(target); // relatywnie do rootfs
 
         if link_path.exists() {
-            // remove existing file/symlink before creating
-            fs::remove_file(&link_path)
-                .with_context(|| format!("removing existing link {:?}", link_path))?;
+            fs::remove_file(&link_path)?;
         }
-        unix_fs::symlink(&target_path, &link_path)
-            .with_context(|| format!("creating symlink {:?} -> {:?}", link_path, target_path))?;
+        unix_fs::symlink(target_path, &link_path)?;
     }
+
 
     // attempt to strip usermeta (propagate error)
     let mut info = XattrRemovalInfo::default();
@@ -444,12 +443,31 @@ fn postprocess_mtree(repo: &ostree::Repo, rootfs: &ostree::MutableTree) -> Resul
     Ok(())
 }
 
+
+fn clean_rootfs(root: &Utf8Path) -> anyhow::Result<()> {
+    for entry in walkdir::WalkDir::new(root) {
+        let entry = entry?;
+        let ftype = entry.file_type();
+
+        if ftype.is_socket() || ftype.is_fifo() || ftype.is_char_device() || ftype.is_block_device() {
+            let path = entry.path();
+            println!("⚠️ Removing special file: {}", path.display());
+            // Możesz usunąć fizycznie:
+            std::fs::remove_file(path)?;
+            // albo tylko zostawić jako warning i nic nie robić
+        }
+    }
+    Ok(())
+}
+
 fn generate_commit_from_rootfs(
     repo: &ostree::Repo,
     rootfs: &Utf8Path,  // zamiast &Dir
     modifier: ostree::RepoCommitModifier,
     creation_time: Option<&chrono::DateTime<chrono::FixedOffset>>,
 ) -> Result<String> {
+    //Fix sockets issue
+    clean_rootfs(rootfs)?;
     let root_mtree = ostree::MutableTree::new();
     let cancellable = gio::Cancellable::NONE;
     let tx = repo.auto_transaction(cancellable)?;
@@ -498,8 +516,17 @@ fn generate_commit_from_rootfs(
                 .write_symlink(None, 0, 0, xattrs.as_ref(), contents.to_str().unwrap(), cancellable)
                 .with_context(|| format!("Processing symlink {selabel_path}"))?;
             root_mtree.replace_file(&name, &link_checksum)?;
+        } else if ftype.is_socket() {
+            println!("⚠️ Ignoring socket {name}");
+            continue;
+        } else if ftype.is_fifo() {
+            println!("⚠️ Ignoring FIFO {name}");
+            continue;
+        } else if ftype.is_char_device() || ftype.is_block_device() {
+            println!("⚠️ Ignoring device node {name}");
+            continue;
         } else {
-            anyhow::bail!("Unsupported regular file {name} at toplevel");
+            anyhow::bail!("Unsupported special file {name} at toplevel");
         }
     }
 
@@ -555,14 +582,14 @@ async fn export_to_archive(
     Ok(())
 }
 
-pub(crate) fn run(config: &ConfigYaml, opts: &ComposeImageOpts) {
-    if let Err(e) = run_inner(config, opts) {
-        eprintln!("Błąd: {:?}", e);
+pub(crate) async fn run(config: &ConfigYaml, opts: &ComposeImageOpts) {
+    if let Err(e) = run_inner(config, opts).await {
+        eprintln!("ERROR: {:?}", e);
         std::process::exit(1);
     }
 }
 
-fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
+async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
     if !opts.ostree_repo.exists() {
         return Err(anyhow!("OSTree repo path does not exist: {}", opts.ostree_repo));
     }
@@ -587,10 +614,14 @@ fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
 
     let repo = ostree::Repo::open_at(libc::AT_FDCWD, &opts.ostree_repo.as_str(), gio::Cancellable::NONE)?;
     let commit = generate_commit_from_rootfs(&repo, rootfs_path, modifier, Some(&creation_time))?;
+    //Convert to bare-split-xattrs
+    //commitContainerRootfs(config, opts, _rootfs.path())?;
 
-    export_to_archive(&repo, &commit, opts);
+    export_to_archive(&repo, &commit, opts)
+        .await
+        .context("Failed to export to archive")?;
 
-    println!("✅ Commit {commit} wyeksportowany do {}", opts.output);
+    println!("✅ Commit {commit} exported to {}", opts.output);
     Ok(())
 }
 

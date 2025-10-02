@@ -18,7 +18,8 @@ enum Commands {
     Compose(compose::ComposeImageOpts),
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -27,7 +28,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             // Wczytanie YAML i dalsza logika
             let config = compose::yaml_parse(opts.manifest.as_str())?;
-            compose::run(&config, &opts);
+            compose::run(&config, &opts).await;
 
             // Tutaj dalsze kroki: instalacja pakietów, OSTree commit itd.
         }
