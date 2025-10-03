@@ -1,5 +1,5 @@
 //Build Arch-Based OSTree OCI Image
-//TODO - 2. Preparation logic 3. Rootfs Preparation 4. OSTREE Commit
+//TODO - Services, Custom scripts, Initramfs generation
 
 use std::error::Error;
 use camino::Utf8PathBuf;
@@ -69,21 +69,27 @@ pub struct ComposeImageOpts
 pub struct ConfigYaml
 {
     include: Option<Vec<String>>, //Inne pliki .yaml to tej strukturze
-    r#ref: String, //Branch OSTree
     packages: Vec<String>, //Pakiety do instalacji
-    repos: Option<Vec<String>>, //Dodatkowe repozytoria
+    services: Option<Vec<String>>, //Usługi systemd do włączenia
+    scripts: Option<Vec<Utf8PathBuf>> //Skrypty postinstalacyjne
 }
 
 impl ConfigYaml
 {
     fn merge(&mut self, other: ConfigYaml)
     {
-        self.r#ref = other.r#ref;
         self.packages.extend(other.packages);
-        // scalanie repos
-        match (&mut self.repos, other.repos) {
-            (Some(self_repos), Some(other_repos)) => self_repos.extend(other_repos),
-            (None, Some(other_repos)) => self.repos = Some(other_repos),
+        // scalanie services
+        match (&mut self.services, other.services) {
+            (Some(self_services), Some(other_services)) => self_services.extend(other_services),
+            (None, Some(other_services)) => self.services = Some(other_services),
+            _ => {} // nic do zrobienia jeśli other.repos == None
+        }
+
+        //scalanie scripts
+        match (&mut self.scripts, other.scripts) {
+            (Some(self_scripts), Some(other_scripts)) => self_scripts.extend(other_scripts),
+            (None, Some(other_scripts)) => self.scripts = Some(other_scripts),
             _ => {} // nic do zrobienia jeśli other.repos == None
         }
 
@@ -112,7 +118,7 @@ pub fn yaml_parse(path: &str) -> Result<ConfigYaml, Box<dyn Error>> {
     Ok(config)
 }
 
-fn prepare_rootfs(config: &ConfigYaml, ostree_repo: &Utf8PathBuf) -> Result<TempDir> {
+fn prepare_rootfs(config: &ConfigYaml) -> Result<TempDir> {
     let tmp_dir = TempDir::new()?; // creates unique dir in /tmp
     println!("Temporary rootfs directory created at: {:?}", tmp_dir.path());
 
@@ -123,6 +129,15 @@ fn prepare_rootfs(config: &ConfigYaml, ostree_repo: &Utf8PathBuf) -> Result<Temp
     // Install files, propagate errors
     install_filesystem(tmp_dir.path(), &config.packages)
         .context("Failed to install filesystem (pacstrap)")?;
+
+    setup_rootfs_services(tmp_dir.path(), config.services.as_deref())
+        .context("Failed to enable services")?;
+
+    execute_scripts_in_rootfs(tmp_dir.path(), config.scripts.as_deref())
+        .context("Failed to execute scripts")?;
+
+    rebuild_initramfs(tmp_dir.path())
+        .context("Failed to build initramfs")?;
 
     Ok(tmp_dir)
 }
@@ -205,6 +220,107 @@ fn install_filesystem(rootfs: &Path, packages: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn setup_rootfs_services(rootfs: &Path, services: Option<&[String]>) -> Result<()>
+{
+    if let Some(services) = services
+    {
+        for service in services
+        {
+            println!("Enabling service: {}", service);
+
+            let status = Command::new("arch-chroot")
+                .arg(rootfs)
+                .arg("systemctl")
+                .arg("enable")
+                .arg(service)
+                .status()
+                .with_context(|| format!("Failed to run systemctl enable {service} in chroot"))?;
+
+            if !status.success()
+            {
+                eprintln!("Failed to enable service: {}", service);
+            }
+
+        }
+    }
+
+    Ok(())
+}
+
+fn execute_scripts_in_rootfs(rootfs: &Path, scripts: Option<&[Utf8PathBuf]>) -> Result<()>
+{
+    if let Some(scripts) = scripts
+    {
+        for script in scripts
+        {
+            println!("Executing script: {}", script);
+
+            let file = File::open(script)
+                .with_context(|| format!("Failed to open script file {}", script))?;
+
+            let status = Command::new("arch-chroot")
+                .arg(rootfs)
+                .arg("/bin/bash")
+                .arg("-s")
+                .stdin(file)
+                .status()
+                .with_context(|| format!("Failed to execute {script} in chroot"))?;
+
+            if !status.success()
+            {
+                eprintln!("Failed to execute script: {}", script);
+            }
+
+        }
+    }
+    Ok(())
+}
+
+fn rebuild_initramfs(rootfs: &Path) -> Result<()>
+{
+    let output = Command::new("arch-chroot")
+        .arg(rootfs)
+        .arg("uname")
+        .arg("-r")
+        .output()
+        .context("Failed to run uname -r inside chroot")?;
+
+    if !output.status.success() {
+        eprintln!(
+            "uname -r failed inside chroot: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let kernel_version = String::from_utf8(output.stdout)?
+        .trim()
+        .to_string();
+
+    println!("Kernel version detected in chroot: {}", kernel_version);
+
+    // 2. Ścieżka docelowa initramfs
+    let initramfs_path = format!("/usr/lib/modules/{}/initramfs.img", kernel_version);
+
+    // 4. Uruchom dracut wewnątrz chroota
+    let status = Command::new("arch-chroot")
+        .arg(rootfs)
+        .arg("dracut")
+        .arg("--force")
+        .arg("--zstd")
+        .arg("--reproducible")
+        .arg("--verbose")
+        .arg("--kver")
+        .arg(&kernel_version)
+        .arg(&initramfs_path)
+        .status()
+        .context("Failed to run dracut inside chroot")?;
+
+    if !status.success() {
+        eprintln!("dracut failed inside chroot");
+    }
+    Ok(())
+}
+
 fn fdpath_for(fd: impl AsFd, path: impl AsRef<Path>) -> PathBuf {
     let fd = fd.as_fd();
     let path = path.as_ref();
@@ -279,84 +395,6 @@ fn strip_usermeta(dir_path: &Path, info: &mut XattrRemovalInfo) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn commitContainerRootfs(config: &ConfigYaml, opts: &ComposeImageOpts, rootfs: &Path) -> Result<()>
-{
-    let cancellable = gio::Cancellable::NONE;
-    let repo = ostree::Repo::open_at(libc::AT_FDCWD, &opts.ostree_repo.as_str(), cancellable)?;
-    unpack_commit_to_dir_as_bare_split_xattrs(&repo, &config.r#ref, Utf8Path::from_path(rootfs).context("rootfs path is not valid UTF-8")?)?;
-    Ok(())
-}
-
-/// For the ostree-container format, we added a new repo mode `bare-split-xattrs`.
-/// While the ostree (C) code base has some support for reading this, it does
-/// not support writing it. The only code that does "writes" is when we generate
-/// a tar stream in the ostree-ext codebase. Hence, we synthesize the flattened
-/// rootfs here by converting to a tar stream internally, and unpacking it via
-/// forking `tar -x`.
-fn unpack_commit_to_dir_as_bare_split_xattrs(
-    repo: &ostree::Repo,
-    rev: &str,
-    path: &Utf8Path,
-) -> Result<()> {
-    std::fs::create_dir(path)?;
-    let repo = repo.clone();
-
-    // I hit some bugs in the Rust tar-rs trying to use it for this,
-    // would probably be good to fix, but in the end there's no
-    // issues with relying on /bin/tar here.
-    let mut untar_cmd = Command::new("tar");
-    untar_cmd.stdin(std::process::Stdio::piped());
-    // We default to all xattrs *except* selinux (because we can't set it
-    // at container build time).
-    untar_cmd.current_dir(path).args([
-        "-x",
-        "--xattrs",
-        "--xattrs-include=*",
-        "--no-selinux",
-        "-f",
-        "-",
-    ]);
-    let mut untar_child = untar_cmd.spawn()?;
-    // To ensure any reference to the inner pipes are closed
-    drop(untar_cmd);
-    let stdin = untar_child.stdin.take().unwrap();
-    // We use a thread scope so our spawned helper thread to synthesize
-    // the tar can safely borrow from this outer scope. Which doesn't
-    // *really* matter since we're just borrowing repo and rev, but hey might
-    // as well avoid copies.
-    std::thread::scope(move |scope| {
-        tracing::debug!("spawning untar");
-        let mktar = scope.spawn(move || {
-            tracing::debug!("spawning mktar");
-            ostree_ext::tar::export_commit(&repo, &rev, stdin, None)?;
-            anyhow::Ok(())
-        });
-        // Wait for both of our tasks.
-        tracing::debug!("joining mktar");
-        let mktar_result = mktar.join().unwrap();
-        tracing::debug!("completed mktar");
-        let untar_result = untar_child.wait()?;
-        tracing::debug!("completed untar");
-        let untar_result = if !untar_result.success() {
-            Err(anyhow::anyhow!("failed to untar: {untar_result:?}"))
-        } else {
-            Ok(())
-        };
-        // Handle errors from either end, or both. Almost always it will be
-        // "both" - if one side fails, the other will get EPIPE usually.
-        match (mktar_result, untar_result) {
-            (Ok(()), Ok(())) => anyhow::Ok(()),
-            (Ok(()), Err(e)) => return Err(e.into()),
-            (Err(e), Ok(())) => return Err(e.into()),
-            (Err(mktar_err), Err(untar_err)) => {
-                anyhow::bail!(
-                    "Multiple errors:\n Generating tar: {mktar_err}\n Unpacking: {untar_err}"
-                );
-            }
-        }
-    })
 }
 
 fn label_to_xattrs(label: Option<&str>) -> Option<glib::Variant> {
@@ -599,7 +637,7 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
 
     println!("Using OSTree repo at {}", opts.ostree_repo);
 
-    let _rootfs = prepare_rootfs(config, &opts.ostree_repo)?;
+    let _rootfs = prepare_rootfs(config)?;
     let rootfs_path: &Utf8Path = Utf8Path::from_path(_rootfs.path())
         .context("Rootfs path is not valid UTF-8")?;
 
@@ -613,10 +651,11 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
     let creation_time: DateTime<FixedOffset> = now_utc.into();
 
     let repo = ostree::Repo::open_at(libc::AT_FDCWD, &opts.ostree_repo.as_str(), gio::Cancellable::NONE)?;
+    println!("Generating Commit...");
     let commit = generate_commit_from_rootfs(&repo, rootfs_path, modifier, Some(&creation_time))?;
     //Convert to bare-split-xattrs
     //commitContainerRootfs(config, opts, _rootfs.path())?;
-
+    println!("Exporting to container format (.ociarchive)...");
     export_to_archive(&repo, &commit, opts)
         .await
         .context("Failed to export to archive")?;
