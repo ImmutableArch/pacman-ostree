@@ -1,8 +1,11 @@
 use clap::{Parser, Subcommand };
+use ostree_ext::containers_image_proxy::ConvertedLayerInfo;
 use std::error::Error;
+use anyhow::{Context, Result};
 
 mod compose;
 mod pacman_manager;
+mod container;
 
 
 #[derive(Parser, Debug)]
@@ -18,8 +21,10 @@ enum Commands {
     Compose(compose::ComposeImageOpts),
 }
 
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn Error>>
+{
     let cli = Cli::parse();
 
     match cli.command {
@@ -29,11 +34,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             // Wczytanie YAML i dalsza logika
             let config = compose::yaml_parse(opts.manifest.as_str())?;
             compose::run(&config, &opts).await;
-
-            // Tutaj dalsze kroki: instalacja pakietów, OSTree commit itd.
         }
     }
 
     Ok(())
 }
+
 

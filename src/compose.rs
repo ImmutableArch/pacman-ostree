@@ -38,6 +38,7 @@ use ostree_ext::{oci_spec, ostree};
 use std::os::unix::fs as unix_fs;
 
 use crate::pacman_manager;
+use crate::container;
 
 const SYSROOT: &str = "sysroot";
 const USR: &str = "usr";
@@ -601,24 +602,6 @@ fn generate_commit_from_rootfs(
     Ok(commit.into())
 }
 
-async fn export_to_archive(
-    repo: &ostree::Repo,
-    commit: &str,
-    opts: &ComposeImageOpts
-) -> Result<()> {
-    let oci_dest = ImageReference
-    {
-        transport: ostree_container::Transport::OciArchive,
-        name: opts.output.to_string(),
-    };
-   let mut export_opts = ostree_container::ExportOpts::default();
-   let config = ostree_container::Config::default();
-    export_opts.max_layers = opts.max_layers; // tu już pasuje Option<NonZeroU32>
-    ostree_container::encapsulate(repo, commit, &config, Some(export_opts), &oci_dest)
-    .await
-    .context("Exporting to OCI failed")?;
-    Ok(())
-}
 
 pub(crate) async fn run(config: &ConfigYaml, opts: &ComposeImageOpts) {
     if let Err(e) = run_inner(config, opts).await {
@@ -653,14 +636,27 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
     let repo = ostree::Repo::open_at(libc::AT_FDCWD, &opts.ostree_repo.as_str(), gio::Cancellable::NONE)?;
     println!("Generating Commit...");
     let commit = generate_commit_from_rootfs(&repo, rootfs_path, modifier, Some(&creation_time))?;
-    //Convert to bare-split-xattrs
-    //commitContainerRootfs(config, opts, _rootfs.path())?;
-    println!("Exporting to container format (.ociarchive)...");
-    export_to_archive(&repo, &commit, opts)
-        .await
-        .context("Failed to export to archive")?;
+    //Generate container image
 
     println!("✅ Commit {commit} exported to {}", opts.output);
+    println!("🔹 Building OCI image from commit...");
+
+    let imgref_str = format!("oci-archive:{}@{}", opts.output, commit);
+    let args = vec![
+    "container-encapsulate".to_string(),
+    "--repo".to_string(),
+    opts.ostree_repo.to_string(),
+    commit.clone(),
+    imgref_str,
+    "--format-version".to_string(),
+    "2".to_string(),
+    "--max-layers".to_string(),
+    opts.max_layers.map(|v| v.to_string()).unwrap_or("64".to_string()), // np. domyślnie 64
+    ];
+
+
+    container::container_encapsulate(args)
+        .context("Failed to encapsulate container image")?;
     Ok(())
 }
 
