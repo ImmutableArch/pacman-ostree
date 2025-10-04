@@ -250,24 +250,6 @@ fn build_fs_mapping_recurse(
     Ok(())
 }
 
-fn gv_nevra_to_string(pkg: &glib::Variant) -> String {
-    let name = pkg.child_value(0);
-    let name = name.str().unwrap();
-    let epoch = pkg.child_value(1);
-    let epoch = epoch.str().unwrap();
-    let version = pkg.child_value(2);
-    let version = version.str().unwrap();
-    let release = pkg.child_value(3);
-    let release = release.str().unwrap();
-    let arch = pkg.child_value(4);
-    let arch = arch.str().unwrap();
-    if epoch == "0" {
-        format!("{}-{}-{}.{}", name, version, release, arch)
-    } else {
-        format!("{}-{}:{}-{}.{}", name, epoch, version, release, arch)
-    }
-}
-
 fn get_user_component_xattr(file: &ostree::RepoFile) -> std::io::Result<Option<String>> {
     let xattrs = match file.xattrs(gio::Cancellable::NONE) {
         Ok(xattrs) => xattrs,
