@@ -655,14 +655,14 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
         "container-encapsulate".to_string(),
         "--repo".to_string(),
         opts.ostree_repo.to_string(),
+        commit.clone(), // <-- ostree_ref
+        imgref_str,     // <-- imgref
         "--format-version".to_string(),
         "2".to_string(),
         "--max-layers".to_string(),
         opts.max_layers.map(|v| v.to_string()).unwrap_or("64".to_string()),
-        commit.clone(),
-        imgref_str,
     ];
-
+    println!("🔧 Running: container-encapsulate {}", args.join(" "));
 
     container::container_encapsulate(args)
         .context("Failed to encapsulate container image")?;
