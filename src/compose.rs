@@ -641,7 +641,7 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
     println!("✅ Commit {commit} exported to {}", opts.output);
     println!("🔹 Building OCI image from commit...");
 
-    let imgref_str = format!("oci-archive:{}@{}", opts.output, commit);
+    let imgref_str = format!("oci-archive:{}", opts.output);
     let args = vec![
     "container-encapsulate".to_string(),
     "--repo".to_string(),
