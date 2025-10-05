@@ -649,25 +649,17 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
     println!("✅ Commit {commit} exported to {}", opts.output);
     println!("🔹 Building OCI image from commit...");
 
-    let imgref_str = format!("oci-archive:{}", opts.output);
+    let mut all_args: Vec<String> = Vec::new();
+    all_args.push("container-encapsulate".to_string());
+    all_args.push(format!("--repo={}", opts.ostree_repo));  // --repo=<REPO>
+    all_args.push(commit.clone());                          // <OSTREE_REF>
+    all_args.push(format!("oci-archive:{}", opts.output)); // <IMGREF>
+    all_args.push("--format-version=2".to_string());
+    all_args.push(format!("--max-layers={}", opts.max_layers.map(|v| v.to_string()).unwrap_or_else(|| "64".to_string())));
 
-    let mut args = vec![
-        "--repo".to_string(),
-        opts.ostree_repo.to_string(),
-        commit.clone(),          // OSTREE_REF
-        imgref_str,              // IMGREF
-        "--format-version".to_string(),
-        "2".to_string(),
-        "--max-layers".to_string(),
-        opts.max_layers.map(|v| v.to_string()).unwrap_or("64".to_string()),
-    ];
-    println!("🔧 Running: encapsulate {}", args.join(" "));
+    println!("argv: {:?}", all_args);
+    container::container_encapsulate(all_args)?;
 
-    let mut all_args = vec!["container-encapsulate".to_string()];
-    all_args.extend(args);
-
-    container::container_encapsulate(all_args)
-        .context("Failed to encapsulate container image")?;
     Ok(())
 }
 
