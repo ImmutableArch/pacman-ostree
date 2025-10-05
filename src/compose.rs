@@ -651,11 +651,11 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
 
     let mut all_args: Vec<String> = Vec::new();
     all_args.push("container-encapsulate".to_string());
-    all_args.push(format!("--repo={}", opts.ostree_repo));  // --repo=<REPO>
-    all_args.push(commit.clone());                          // <OSTREE_REF>
-    all_args.push(format!("oci-archive:{}", opts.output)); // <IMGREF>
+    all_args.push(format!("--repo {}", opts.ostree_repo));  // --repo=<REPO>
     all_args.push("--format-version=2".to_string());
     all_args.push(format!("--max-layers={}", opts.max_layers.map(|v| v.to_string()).unwrap_or_else(|| "64".to_string())));
+    all_args.push(commit.clone());                          // <OSTREE_REF>
+    all_args.push(format!("oci-archive:{}", opts.output)); // <IMGREF>
 
     println!("argv: {:?}", all_args);
     container::container_encapsulate(all_args)?;
