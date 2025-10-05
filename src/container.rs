@@ -33,63 +33,63 @@ use crate::pacman_manager;
 const COMPONENT_XATTR: &CStr = c"user.component";
 
 #[derive(Debug, Parser)]
-struct ContainerEncapsulateOpts {
+pub struct ContainerEncapsulateOpts {
     #[clap(long)]
     #[clap(value_parser)]
-    repo: Utf8PathBuf,
+    pub repo: Utf8PathBuf,
 
     /// OSTree branch name or checksum
-    ostree_ref: String,
+    pub ostree_ref: String,
 
     /// Image reference, e.g. registry:quay.io/exampleos/exampleos:latest
     #[clap(value_parser = ostree_ext::cli::parse_base_imgref)]
-    imgref: ImageReference,
+    pub imgref: ImageReference,
 
     /// Additional labels for the container
     #[clap(name = "label", long, short)]
-    labels: Vec<String>,
+    pub labels: Vec<String>,
 
     /// Path to container image configuration in JSON format.  This is the `config`
     /// field of https://github.com/opencontainers/image-spec/blob/main/config.md
     #[clap(long)]
-    image_config: Option<Utf8PathBuf>,
+    pub image_config: Option<Utf8PathBuf>,
 
     /// Override the architecture.
     #[clap(long)]
-    arch: Option<Arch>,
+    pub arch: Option<Arch>,
 
     /// Propagate an OSTree commit metadata key to container label
     #[clap(name = "copymeta", long)]
-    copy_meta_keys: Vec<String>,
+    pub copy_meta_keys: Vec<String>,
 
     /// Propagate an optionally-present OSTree commit metadata key to container label
     #[clap(name = "copymeta-opt", long)]
-    copy_meta_opt_keys: Vec<String>,
+    pub copy_meta_opt_keys: Vec<String>,
 
     /// Corresponds to the Dockerfile `CMD` instruction.
     #[clap(long)]
-    cmd: Option<Vec<String>>,
+    pub cmd: Option<Vec<String>>,
 
     /// Maximum number of container image layers
     #[clap(long)]
-    max_layers: Option<NonZeroU32>,
+    pub max_layers: Option<NonZeroU32>,
 
     /// The encapsulated container format version; must be 1 or 2.
     #[clap(long, default_value = "1")]
-    format_version: u32,
+    pub format_version: u32,
 
     #[clap(long)]
     /// Output content metadata as JSON
-    write_contentmeta_json: Option<Utf8PathBuf>,
+    pub write_contentmeta_json: Option<Utf8PathBuf>,
 
     /// Compare OCI layers of current build with another(imgref)
     #[clap(name = "compare-with-build", long)]
-    compare_with_build: Option<String>,
+    pub compare_with_build: Option<String>,
 
     /// Prevent a change in packing structure by taking a previous build metadata (oci config and
     /// manifest)
     #[clap(long)]
-    previous_build_manifest: Option<Utf8PathBuf>,
+    pub previous_build_manifest: Option<Utf8PathBuf>,
 }
 
 #[derive(Debug)]

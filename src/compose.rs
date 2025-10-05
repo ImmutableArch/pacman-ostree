@@ -669,5 +669,49 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_container_encapsulate_args_order() {
+        // symulowane dane wejściowe
+        let repo_path = "/ostree/repo";
+        let commit_ref = "exampleos/x86_64/stable";
+        let img_output = "image.ociarchive";
+        let max_layers = 64;
+
+        // oczekiwany string "oci-archive:image.ociarchive"
+        let imgref_str = format!("oci-archive:{}", img_output);
+
+        // składamy listę argumentów tak, jak w Twoim kodzie
+        let args = vec![
+            "container-encapsulate".to_string(),
+            "--repo".to_string(),
+            repo_path.to_string(),
+            commit_ref.to_string(),      // <-- ostree_ref
+            imgref_str.clone(),          // <-- imgref
+            "--format-version".to_string(),
+            "2".to_string(),
+            "--max-layers".to_string(),
+            max_layers.to_string(),
+        ];
+
+        // ✅ próbujemy sparsować przez `ContainerEncapsulateOpts` (clap)
+        let parsed = container::ContainerEncapsulateOpts::try_parse_from(&args)
+            .expect("Argumenty nie przeszły walidacji przez clap");
+
+        // 🧠 sprawdzamy, czy wszystko poprawnie się sparsowało
+        assert_eq!(parsed.repo, repo_path);
+        assert_eq!(parsed.ostree_ref, commit_ref);
+        assert_eq!(parsed.imgref.to_string(), imgref_str);
+        assert_eq!(parsed.format_version, 2);
+        assert_eq!(parsed.max_layers.unwrap().get(), max_layers);
+
+        println!("✅ Argument order and parsing verified OK");
+    }
+}
+
+
 
 
