@@ -1,5 +1,4 @@
 //Build Arch-Based OSTree OCI Image
-//TODO - Services, Custom scripts, Initramfs generation
 
 use std::error::Error;
 use camino::Utf8PathBuf;

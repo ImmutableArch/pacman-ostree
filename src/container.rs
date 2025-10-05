@@ -278,7 +278,9 @@ pub(crate) fn container_encapsulate(args: Vec<String>) -> Result<()> {
     use pacman_manager::read_packages_from_commit;
 
     // Parse CLI arguments
-    let opt = ContainerEncapsulateOpts::parse_from(&args[1..]);
+    eprintln!("DEBUG: args for parse_from = {:#?}", args);
+    let opt = ContainerEncapsulateOpts::parse_from(&args);
+
 
     let repo = &ostree_ext::cli::parse_repo(&opt.repo)?;
     let (root, rev) = repo.read_commit(opt.ostree_ref.as_str(), gio::Cancellable::NONE)?;
