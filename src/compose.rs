@@ -319,6 +319,7 @@ fn rebuild_initramfs(rootfs: &Path) -> Result<()> {
     .arg("--add")
     .arg("ostree")
     .arg(&initramfs_path)
+    .env("DRACUT_NO_XATTR", "1")
     .status()
     .context("Failed to run dracut on host")?;
 
@@ -649,16 +650,17 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
     println!("🔹 Building OCI image from commit...");
 
     let imgref_str = format!("oci-archive:{}", opts.output);
-    let args = vec![
-    "container-encapsulate".to_string(),
-    "--repo".to_string(),
-    opts.ostree_repo.to_string(),
-    commit.clone(),
-    imgref_str,
-    "--format-version".to_string(),
-    "2".to_string(),
-    "--max-layers".to_string(),
-    opts.max_layers.map(|v| v.to_string()).unwrap_or("64".to_string()), // np. domyślnie 64
+
+    let mut args = vec![
+        "container-encapsulate".to_string(),
+        "--repo".to_string(),
+        opts.ostree_repo.to_string(),
+        "--format-version".to_string(),
+        "2".to_string(),
+        "--max-layers".to_string(),
+        opts.max_layers.map(|v| v.to_string()).unwrap_or("64".to_string()),
+        commit.clone(),
+        imgref_str,
     ];
 
 
