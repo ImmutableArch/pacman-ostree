@@ -7,6 +7,11 @@ use std::path::Path;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::process::Command;
+use ostree_ext::ostree;
+use ostree::gio;
+use std::io::Cursor;
+use ostree_ext::prelude::*;
+use std::str;
 
 #[derive(Debug, Clone)]
 pub struct PacmanPackageMeta {
@@ -104,46 +109,87 @@ pub(crate) fn pacstrap_install(root: &Path, packages: &[String]) -> Result<()> {
 }
 
 /// Read all Pacman packages from a commit path (Pacman local database)
-/// Read all Pacman packages from a commit path (Pacman local database)
+/// This implementation opens the OSTree repo, reads the commit, and looks
+/// for var/lib/pacman/local inside the commit tree.
 pub(crate) fn read_packages_from_commit(
     repo_path: &Utf8PathBuf,
-    _ostree_ref: &str
+    ostree_ref: &str
 ) -> Result<HashMap<String, PacmanPackageMeta>> {
     let mut packages = HashMap::new();
 
-    // Pacman database path inside the commit
-    let db_path = repo_path.join("var/lib/pacman/local");
-    if !db_path.exists() {
-        anyhow::bail!("Pacman local database path not found: {}", db_path);
+    // Open ostree repo (same approach used elsewhere in your code)
+    let repo = ostree::Repo::open_at(libc::AT_FDCWD, repo_path.as_str(), gio::Cancellable::NONE)
+        .context("Opening OSTree repo")?;
+
+    // Read the commit (this gives us a gio::File representing the commit root tree)
+    let (root, _rev) = repo
+        .read_commit(ostree_ref, gio::Cancellable::NONE)
+        .with_context(|| format!("Reading commit '{}' from repo '{}'", ostree_ref, repo_path.as_str()))?;
+
+    // Build the path inside the commit: /var/lib/pacman/local
+    let var = root.child("var");
+    let lib = var.child("lib");
+    let pacman = lib.child("pacman");
+    let local = pacman.child("local");
+
+    if !local.query_exists(gio::Cancellable::NONE) {
+        anyhow::bail!(
+            "Pacman local database path not found in commit: {}/var/lib/pacman/local",
+            repo_path.as_str()
+        );
     }
 
-    for entry in std::fs::read_dir(&db_path).context("Reading Pacman database directory")? {
+    // enumerate children (each subdir is a package directory)
+    let enumerator = local
+        .enumerate_children(
+            "standard::name,standard::type",
+            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+            gio::Cancellable::NONE,
+        )
+        .context("Reading pacman local directory entries")?;
+
+    for entry in enumerator {
         let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            let desc_file = entry.path().join("desc");
-            if desc_file.exists() {
-                // Parse desc (core metadata)
-                let mut pkg_meta = parse_desc_file(&desc_file)?;
+        if entry.file_type() == gio::FileType::Directory {
+            let pkgdir_name = entry.name();
+            let pkgdir = local.child(&pkgdir_name);
 
-                // Try to read files from "files" file (optional)
-                let files_file = entry.path().join("files");
-                if files_file.exists() {
-                    let files = parse_files_file(&files_file)?;
-                    pkg_meta.provided_files = files;
-                }
-
-                packages.insert(pkg_meta.pkgname.clone(), pkg_meta);
+            // desc file is required for pacman package metadata
+            let desc = pkgdir.child("desc");
+            if !desc.query_exists(gio::Cancellable::NONE) {
+                // skip packages without desc
+                continue;
             }
+
+            // load desc contents
+            let (desc_bytes, _) = desc
+                .load_contents(gio::Cancellable::NONE)
+                .with_context(|| format!("Loading desc for package dir '{}'", pkgdir_name.display()))?;
+            let mut pkg_meta = parse_desc_from_bytes(&desc_bytes)
+                .with_context(|| format!("Parsing desc for package '{}'", pkgdir_name.display()))?;
+
+            // optionally parse files file
+            let files_file = pkgdir.child("files");
+            if files_file.query_exists(gio::Cancellable::NONE) {
+                let (files_bytes, _) = files_file
+                    .load_contents(gio::Cancellable::NONE)
+                    .with_context(|| format!("Loading files for package '{}'", pkgdir_name.display()))?;
+                let files = parse_files_from_bytes(&files_bytes)
+                    .with_context(|| format!("Parsing files for package '{}'", pkgdir_name.display()))?;
+                pkg_meta.provided_files = files;
+            }
+
+            packages.insert(pkg_meta.pkgname.clone(), pkg_meta);
         }
     }
 
     Ok(packages)
 }
 
-/// Parse a single Pacman desc file into PacmanPackageMeta
-fn parse_desc_file(path: &std::path::Path) -> Result<PacmanPackageMeta> {
-    let file = File::open(path).context("opening desc file")?;
-    let reader = BufReader::new(file);
+/// Parse a single Pacman desc content (from bytes) into PacmanPackageMeta
+fn parse_desc_from_bytes(bytes: &[u8]) -> Result<PacmanPackageMeta> {
+    let cursor = Cursor::new(bytes);
+    let reader = BufReader::new(cursor);
 
     let mut current_key = String::new();
     let mut fields: HashMap<String, Vec<String>> = HashMap::new();
@@ -167,37 +213,40 @@ fn parse_desc_file(path: &std::path::Path) -> Result<PacmanPackageMeta> {
 
     Ok(PacmanPackageMeta {
         pkgname: pkgname.clone(),
-       pkgver,
-       arch,
-       size,
-       buildtime,
-       src_pkg: pkgname,
-       provided_files: Vec::new(), // filled later
-       changelogs: Vec::new(),     // optional
+        pkgver,
+        arch,
+        size,
+        buildtime,
+        src_pkg: pkgname,
+        provided_files: Vec::new(), // filled later
+        changelogs: Vec::new(),     // optional
     })
 }
 
-/// Parse the Pacman "files" file into list of paths
-fn parse_files_file(path: &std::path::Path) -> Result<Vec<Utf8PathBuf>> {
-    let file = File::open(path).context("opening files file")?;
-    let reader = BufReader::new(file);
+/// Parse the Pacman "files" content (from bytes) into list of paths
+fn parse_files_from_bytes(bytes: &[u8]) -> Result<Vec<Utf8PathBuf>> {
+    let cursor = Cursor::new(bytes);
+    let reader = BufReader::new(cursor);
 
     let mut files = Vec::new();
     let mut in_files_section = false;
 
     for line in reader.lines() {
         let line = line?;
-        if line.trim() == "%FILES%" {
+        let t = line.trim();
+        if t == "%FILES%" {
             in_files_section = true;
             continue;
         }
 
         if in_files_section {
             // Stop when empty line (end of section)
-            if line.trim().is_empty() {
+            if t.is_empty() {
                 break;
             }
-            files.push(Utf8PathBuf::from(format!("/{}", line.trim()))); // add leading slash
+            // Ensure leading slash, like pacman local files do store relative paths
+            let path = if t.starts_with('/') { t.to_string() } else { format!("/{}", t) };
+            files.push(Utf8PathBuf::from(path));
         }
     }
 
