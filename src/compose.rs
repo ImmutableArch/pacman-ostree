@@ -277,48 +277,55 @@ fn execute_scripts_in_rootfs(rootfs: &Path, scripts: Option<&[Utf8PathBuf]>) -> 
     Ok(())
 }
 
-fn rebuild_initramfs(rootfs: &Path) -> Result<()>
-{
-    let output = Command::new("arch-chroot")
-        .arg(rootfs)
-        .arg("uname")
-        .arg("-r")
-        .output()
-        .context("Failed to run uname -r inside chroot")?;
+///Regenerate Initramfs with ostree
+fn rebuild_initramfs(rootfs: &Path) -> Result<()> {
+    // 1. Znajdź katalog kernela w rootfs/usr/lib/modules
+    let output = Command::new("bash")
+    .arg("-c")
+    .arg(format!(
+        "basename $(find \"{}/usr/lib/modules\" -maxdepth 1 -type d | grep -v -E \"\\.img\" | tail -n 1)",
+                 rootfs.display()
+    ))
+    .output()
+    .context("Failed to detect kernel version in rootfs")?;
 
     if !output.status.success() {
         eprintln!(
-            "uname -r failed inside chroot: {}",
+            "Failed to detect kernel version: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
 
     let kernel_version = String::from_utf8(output.stdout)?
-        .trim()
-        .to_string();
+    .trim()
+    .to_string();
 
-    println!("Kernel version detected in chroot: {}", kernel_version);
+    println!("Kernel version detected: {}", kernel_version);
 
-    // 2. Ścieżka docelowa initramfs
-    let initramfs_path = format!("/usr/lib/modules/{}/initramfs.img", kernel_version);
+    // 2. Ścieżka docelowa initramfs wewnątrz rootfs
+    let initramfs_path = format!("{}/usr/lib/modules/{}/initramfs.img", rootfs.display(), kernel_version);
 
-    // 4. Uruchom dracut wewnątrz chroota
-    let status = Command::new("arch-chroot")
-        .arg(rootfs)
-        .arg("dracut")
-        .arg("--force")
-        .arg("--zstd")
-        .arg("--reproducible")
-        .arg("--verbose")
-        .arg("--kver")
-        .arg(&kernel_version)
-        .arg(&initramfs_path)
-        .status()
-        .context("Failed to run dracut inside chroot")?;
+    // 3. Uruchom dracut na hoście, wskazując ścieżki do rootfs
+    let status = Command::new("dracut")
+    .arg("--force")
+    .arg("-r")
+    .arg(&rootfs)
+    .arg("--no-hostonly")
+    .arg("--zstd")
+    .arg("--reproducible")
+    .arg("--verbose")
+    .arg("--kver")
+    .arg(&kernel_version)
+    .arg("--add")
+    .arg("ostree")
+    .arg(&initramfs_path)
+    .status()
+    .context("Failed to run dracut on host")?;
 
     if !status.success() {
-        eprintln!("dracut failed inside chroot");
+        eprintln!("dracut failed on host");
     }
+
     Ok(())
 }
 
