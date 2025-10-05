@@ -648,27 +648,23 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
 
     println!("✅ Commit {commit} exported to {}", opts.output);
     println!("🔹 Building OCI image from commit...");
-
-    let mut all_args = vec![
-        "container-encapsulate".to_string(),
+    // Build CLI-style arguments for container_encapsulate
+    let mut ce_args = vec![
+        "container-encapsulate".to_string(),        // argv[0] placeholder
         "--repo".to_string(),
         opts.ostree_repo.to_string(),
-
-        // <-- positional args MUST go right after repo
-        commit.clone(),                          // <OSTREE_REF>
-        format!("oci-archive:{}", opts.output),  // <IMGREF>
-
-        // optional flags go after
+        commit.clone(),                             // OSTree commit
+        format!("oci-archive:{}", opts.output),     // IMGREF
         "--format-version".to_string(),
-        "2".to_string(),
-        "--max-layers".to_string(),
-        opts.max_layers.map(|v| v.to_string()).unwrap_or_else(|| "64".to_string()),
+        "2".to_string(),                            // use OCI v2
     ];
 
+    if let Some(max_layers) = opts.max_layers {
+        ce_args.push("--max-layers".to_string());
+        ce_args.push(max_layers.get().to_string());
+    }
 
-    println!("argv: {:?}", all_args);
-    container::container_encapsulate(all_args)?;
-
+    container::container_encapsulate(ce_args)?;
     Ok(())
 }
 

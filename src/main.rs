@@ -19,6 +19,7 @@ struct Cli {
 enum Commands {
     /// Compose Arch-based OSTree OCI image
     Compose(compose::ComposeImageOpts),
+    
 }
 
 
