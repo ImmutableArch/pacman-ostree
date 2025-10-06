@@ -1,4 +1,5 @@
 //Build Arch-Based OSTree OCI Image
+//TODO - add tmpfiles and ostree-preparation.conf
 
 use std::error::Error;
 use camino::Utf8PathBuf;

@@ -19,6 +19,7 @@ struct Cli {
 enum Commands {
     /// Compose Arch-based OSTree OCI image
     Compose(compose::ComposeImageOpts),
+    /// Ostree-ext cli
     Ostree {
         /// Pass-through arguments for ostree command
         #[arg(trailing_var_arg = true)]
