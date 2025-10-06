@@ -274,7 +274,7 @@ fn get_user_component_xattr(file: &ostree::RepoFile) -> std::io::Result<Option<S
 }
 
 ///This is ostree-ext encapsulate but its using chunks from packages
-pub(crate) fn container_encapsulate(args: Vec<String>) -> Result<()> {
+pub(crate) async fn container_encapsulate(args: Vec<String>) -> Result<()> {
     use pacman_manager::read_packages_from_commit;
 
     // Parse CLI arguments
@@ -498,14 +498,10 @@ pub(crate) fn container_encapsulate(args: Vec<String>) -> Result<()> {
     if opt.format_version >= 2 {
         opts.tar_create_parent_dirs = true;
     }
-
-    let handle = tokio::runtime::Handle::current();
     println!("Generating container image");
-    let digest = handle.block_on(async {
-        ostree_ext::container::encapsulate(repo, rev.as_str(), &config, Some(opts), &opt.imgref)
+    let digest = ostree_ext::container::encapsulate(repo, rev.as_str(), &config, Some(opts), &opt.imgref)
             .await
-            .context("Encapsulating")
-    })?;
+            .context("Encapsulating")?;
 
     println!("Pushed digest: {}", digest);
     Ok(())

@@ -667,7 +667,8 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
     ce_args.push(commit.clone());                             // ostree_ref (positional)
     ce_args.push(format!("oci-archive:{}", opts.output));     // imgref (positional)
 
-    container::container_encapsulate(ce_args)?;
+    container::container_encapsulate(ce_args)
+        .await?;
     Ok(())
 }
 
