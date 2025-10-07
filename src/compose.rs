@@ -140,6 +140,29 @@ fn prepare_rootfs(config: &ConfigYaml) -> Result<TempDir> {
     rebuild_initramfs(tmp_dir.path())
         .context("Failed to build initramfs")?;
 
+    let prepare_root_path = tmp_dir
+        .path()
+        .join("usr/lib/ostree/prepare-root.conf");
+
+    // Utwórz katalog nadrzędny, jeśli nie istnieje
+    if let Some(parent) = prepare_root_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating directory for {:?}", prepare_root_path))?;
+    }
+
+    // Zawartość pliku konfiguracyjnego
+    let conf_content = "[composefs]
+enabled = yes
+[sysroot]
+readonly = true
+";
+
+    // Zapisz plik
+    fs::write(&prepare_root_path, conf_content)
+        .with_context(|| format!("writing {:?}", prepare_root_path))?;
+
+    println!("✅ Added {:?}", prepare_root_path);
+
     Ok(tmp_dir)
 }
 
@@ -635,7 +658,7 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
     let modifier = ostree::RepoCommitModifier::new(
         ostree::RepoCommitModifierFlags::SKIP_XATTRS
             | ostree::RepoCommitModifierFlags::CANONICAL_PERMISSIONS,
-        None,
+            None,
     );
 
     let now_utc: DateTime<Utc> = Utc::now();
