@@ -4,6 +4,7 @@
 use std::error::Error;
 use camino::Utf8PathBuf;
 use ostree_ext::container::ImageReference;
+use crate::compose::glib::VariantDict;
 use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
 use serde::Deserialize;
@@ -32,7 +33,7 @@ use ostree_ext::containers_image_proxy;
 use ostree_ext::glib::prelude::*;
 use ostree_ext::keyfileext::{map_keyfile_optional, KeyFileExt};
 use ostree_ext::oci_spec::image::ImageConfiguration;
-use ostree_ext::ostree::MutableTree;
+use ostree_ext::ostree::{MutableTree, METADATA_KEY_BOOTABLE};
 use ostree_ext::{container as ostree_container, glib};
 use ostree_ext::{oci_spec, ostree};
 use std::os::unix::fs as unix_fs;
@@ -601,6 +602,11 @@ fn generate_commit_from_rootfs(
     }
 
     postprocess_mtree(repo, &root_mtree)?;
+    let mut dict = VariantDict::new(None);
+
+    // Ustawiamy metadane bootowalne
+    dict.insert(METADATA_KEY_BOOTABLE, &true.to_variant());
+    let metadata = dict.end();
 
     let ostree_root = repo.write_mtree(&root_mtree, cancellable)?;
     let ostree_root = ostree_root
@@ -616,7 +622,7 @@ fn generate_commit_from_rootfs(
         None,
         None,
         None,
-        None,
+        Some(&metadata),
         ostree_root,
         creation_time,
         cancellable,
