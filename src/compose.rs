@@ -4,6 +4,7 @@
 use std::error::Error;
 use camino::Utf8PathBuf;
 use ostree_ext::container::ImageReference;
+use ostree_ext::prelude::FileExt;
 use crate::compose::glib::VariantDict;
 use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
@@ -33,7 +34,7 @@ use ostree_ext::containers_image_proxy;
 use ostree_ext::glib::prelude::*;
 use ostree_ext::keyfileext::{map_keyfile_optional, KeyFileExt};
 use ostree_ext::oci_spec::image::ImageConfiguration;
-use ostree_ext::ostree::{MutableTree, METADATA_KEY_BOOTABLE};
+use ostree_ext::ostree::{MutableTree, METADATA_KEY_BOOTABLE, METADATA_KEY_LINUX};
 use ostree_ext::{container as ostree_container, glib};
 use ostree_ext::{oci_spec, ostree};
 use std::os::unix::fs as unix_fs;
@@ -602,10 +603,24 @@ fn generate_commit_from_rootfs(
     }
 
     postprocess_mtree(repo, &root_mtree)?;
+
+    let root_file = gio::File::for_path(rootfs.as_std_path());
+    let kernel_ver_str = match ostree_ext::bootabletree::find_kernel_dir(&root_file, gio::Cancellable::NONE)? {
+        Some(kernel_dir) => kernel_dir.basename().unwrap().to_string_lossy().to_string(),
+        None => {
+            eprintln!("⚠️ No kernel found, skipping METADATA_KEY_LINUX");
+            "".to_string()
+        }
+    };
+
+
     let mut dict = VariantDict::new(None);
 
     // Ustawiamy metadane bootowalne
     dict.insert(METADATA_KEY_BOOTABLE, &true.to_variant());
+    if !kernel_ver_str.is_empty() {
+        dict.insert(METADATA_KEY_LINUX, &kernel_ver_str.to_variant());
+    }
     let metadata = dict.end();
 
     let ostree_root = repo.write_mtree(&root_mtree, cancellable)?;
@@ -701,7 +716,3 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
         .await?;
     Ok(())
 }
-
-
-
-
