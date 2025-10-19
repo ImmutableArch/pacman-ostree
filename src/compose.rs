@@ -74,7 +74,8 @@ pub struct ConfigYaml
     include: Option<Vec<String>>, //Inne pliki .yaml to tej strukturze
     packages: Vec<String>, //Pakiety do instalacji
     services: Option<Vec<String>>, //Usługi systemd do włączenia
-    scripts: Option<Vec<Utf8PathBuf>> //Skrypty postinstalacyjne
+    scripts: Option<Vec<Utf8PathBuf>>, //Skrypty postinstalacyjne
+    pacmanConf: Option<String> //Plik pacman.conf
 }
 
 impl ConfigYaml
@@ -130,7 +131,7 @@ fn prepare_rootfs(config: &ConfigYaml) -> Result<TempDir> {
     fs::create_dir_all(&path).with_context(|| format!("creating pacman dir at {:?}", path))?;
 
     // Install files, propagate errors
-    install_filesystem(tmp_dir.path(), &config.packages)
+    install_filesystem(tmp_dir.path(), &config.packages, config.pacmanConf.as_deref().map(Path::new))
         .context("Failed to install filesystem (pacstrap)")?;
 
     setup_rootfs_services(tmp_dir.path(), config.services.as_deref())
@@ -168,12 +169,25 @@ readonly = true
     Ok(tmp_dir)
 }
 
-fn install_filesystem(rootfs: &Path, packages: &[String]) -> Result<()> {
+fn install_filesystem(rootfs: &Path, packages: &[String], pacmanConf: Option<&Path>) -> Result<()> {
     println!("Installing packages to rootfs at {:?}", rootfs);
 
     // call pacstrap_install from pacman_manager (now returns Result)
-    crate::pacman_manager::pacstrap_install(rootfs, packages)
+    crate::pacman_manager::pacstrap_install(rootfs, packages, pacmanConf)
         .context("pacstrap_install failed")?;
+
+    //Copy pacman.conf file to rootfs
+    if let Some(conf_path) = pacmanConf {
+        let dest_path = rootfs.join("etc/pacman.conf");
+        fs::copy(conf_path, &dest_path)
+            .with_context(|| format!("Failed to copy {:?} to {:?}", conf_path, dest_path))?;
+    }
+    else {
+        println!("No pacmanConf provided, coping host config...");
+        let dest_path = rootfs.join("etc/pacman.conf");
+        fs::copy("/etc/pacman.conf", &dest_path)
+            .with_context(|| format!("Failed to copy {:?} to {:?}", "/etc/pacman.conf", dest_path))?;
+    }
 
     // create required dirs (if not existing)
     let dirs_to_create = [

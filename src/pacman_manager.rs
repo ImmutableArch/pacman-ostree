@@ -80,20 +80,27 @@ pub(crate) fn remove(root: &Path, cache: &str, packages: &[String]) -> Result<()
 
 /// Run pacstrap to populate the root filesystem.
 /// This captures stdout/stderr and returns a detailed error on failure.
-pub(crate) fn pacstrap_install(root: &Path, packages: &[String]) -> Result<()> {
-    // ensure running as root (pacstrap generally requires root)
+pub(crate) fn pacstrap_install(root: &Path, packages: &[String], pacmanConf: Option<&Path>) -> Result<()> {
     if unsafe { libc::geteuid() } != 0 {
         anyhow::bail!("pacstrap_install requires root privileges (EUID != 0)");
     }
 
-    // `pacstrap -c <root> --noconfirm <packages...>`
-    let output = Command::new("pacstrap")
-        .arg("-c")
-        .arg(root)
-        .arg("--noconfirm")
-        .args(packages)
-        .output()
-        .context("Failed to spawn pacstrap")?;
+    let mut cmd = Command::new("pacstrap");
+
+    if let Some(conf) = pacmanConf {
+        cmd.arg("-C").arg(conf);
+    }
+    else
+    {
+        println!("pacmanConf is null, using host config...");
+        cmd.arg("-c");
+    }
+
+    cmd.arg(root)
+       .arg("--noconfirm")
+       .args(packages);
+
+    let output = cmd.output().context("Failed to spawn pacstrap")?;
 
     if !output.status.success() {
         anyhow::bail!(
