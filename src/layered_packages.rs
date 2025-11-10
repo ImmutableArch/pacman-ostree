@@ -116,6 +116,56 @@ pub fn install_packages(
     Ok(result)
 }
 
+/// Install packages on a fresh system (no existing deployment)
+/// This initializes the layering system with a base ref
+pub fn install_packages_fresh(
+    repo_path: &Utf8PathBuf,
+    pacman_cache: &Utf8PathBuf,
+    pacman_conf: Option<&Path>,
+    base_ref: &str,
+    packages: &[String],
+    deploy: bool,
+) -> Result<LayeringResult> {
+    println!("🆕 Fresh installation - initializing layering");
+    println!("   Base ref: {}", base_ref);
+    println!("   Packages to layer: {:?}", packages);
+
+    // Verify base ref exists
+    let repo = ostree::Repo::open_at(libc::AT_FDCWD, repo_path.as_str(), gio::Cancellable::NONE)
+        .context("Opening OSTree repo")?;
+    
+    let base_exists = repo.resolve_rev(base_ref, false)
+        .context(format!("Base ref '{}' not found in repository", base_ref))?;
+    
+    if base_exists.is_none() {
+        anyhow::bail!("Base ref '{}' does not exist in repository", base_ref);
+    }
+
+    // Extract OS name from ref (e.g., "archlinux/x86_64/base" -> "archlinux")
+    let osname = base_ref.split('/').next().unwrap_or("default");
+
+    // Create initial state with packages
+    let mut state = LayeredState {
+        base_ref: base_ref.to_string(),
+        layered_packages: packages.iter().cloned().collect(),
+        deployed_commit: None,
+    };
+
+    println!("   OS name: {}", osname);
+
+    // Rebuild tree from scratch with layered packages
+    let result = rebuild_with_layers(
+        repo_path,
+        pacman_cache,
+        pacman_conf,
+        &state,
+        osname,
+        deploy,
+    )?;
+
+    Ok(result)
+}
+
 /// Remove packages from the layered set
 /// This is like: rpm-ostree uninstall <packages>
 /// NOTE: Can only remove packages that were layered, NOT base packages!
@@ -255,7 +305,7 @@ fn rebuild_with_layers(
 }
 
 /// Load layering state from commit metadata
-fn load_state_from_commit(repo_path: &Utf8PathBuf, commit: &str) -> Result<LayeredState> {
+pub fn load_state_from_commit(repo_path: &Utf8PathBuf, commit: &str) -> Result<LayeredState> {
     let repo = ostree::Repo::open_at(libc::AT_FDCWD, repo_path.as_str(), gio::Cancellable::NONE)
         .context("Opening repo")?;
 
@@ -468,7 +518,7 @@ fn get_deployment_index(osname: &str, commit: &str) -> Result<u32> {
 }
 
 /// Get currently booted deployment
-fn get_booted_deployment() -> Result<DeploymentInfo> {
+pub fn get_booted_deployment() -> Result<DeploymentInfo> {
     let deployments = list_deployments()?;
     
     deployments
