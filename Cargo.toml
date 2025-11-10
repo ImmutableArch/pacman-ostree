@@ -10,9 +10,10 @@ camino = "1.2.0"
 cap-std-ext = "4.0.6"
 chrono = "0.4.42"
 clap = "4.5.48"
+fd = "0.2.3"
 fn-error-context = "0.2.1"
 libc = "0.2.176"
-ostree-ext = { git = "https://github.com/containers/bootc", features = ["bootc"] }
+ostree-ext = { git = "https://github.com/containers/bootc" }
 rustix = "1.1.2"
 serde = "1.0.227"
 serde_json = "1.0.145"
@@ -22,3 +23,4 @@ tempfile = "3.23.0"
 tokio = { version = "1.47.1", features = ["full", "rt-multi-thread"] }
 tracing = "0.1.41"
 walkdir = "2.5.0"
+

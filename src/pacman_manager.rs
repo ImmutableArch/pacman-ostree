@@ -120,74 +120,127 @@ pub(crate) fn pacstrap_install(root: &Path, packages: &[String], pacmanConf: Opt
 /// for var/lib/pacman/local inside the commit tree.
 pub(crate) fn read_packages_from_commit(
     repo_path: &Utf8PathBuf,
-    ostree_ref: &str
+    ostree_ref: &str,
 ) -> Result<HashMap<String, PacmanPackageMeta>> {
+    use ostree::gio;
+    use ostree::gio::prelude::*;
+    use ostree_ext::prelude::*;
+    use std::collections::HashMap;
+
     let mut packages = HashMap::new();
 
-    // Open ostree repo (same approach used elsewhere in your code)
+    // Open repo
     let repo = ostree::Repo::open_at(libc::AT_FDCWD, repo_path.as_str(), gio::Cancellable::NONE)
         .context("Opening OSTree repo")?;
 
-    // Read the commit (this gives us a gio::File representing the commit root tree)
+    // Read commit → get root directory
     let (root, _rev) = repo
         .read_commit(ostree_ref, gio::Cancellable::NONE)
-        .with_context(|| format!("Reading commit '{}' from repo '{}'", ostree_ref, repo_path.as_str()))?;
+        .with_context(|| format!("Reading commit '{}' from repo '{}'", ostree_ref, repo_path))?;
 
-    // Build the path inside the commit: /var/lib/pacman/local
-    let var = root.child("var");
-    let lib = var.child("lib");
-    let pacman = lib.child("pacman");
-    let local = pacman.child("local");
+    // Path: /var/lib/pacman/local
+    let local = root
+        .child("var")
+        .child("lib")
+        .child("pacman")
+        .child("local");
 
     if !local.query_exists(gio::Cancellable::NONE) {
         anyhow::bail!(
-            "Pacman local database path not found in commit: {}/var/lib/pacman/local",
-            repo_path.as_str()
+            "Pacman local database not found in commit: {}/var/lib/pacman/local",
+            repo_path
         );
     }
 
-    // enumerate children (each subdir is a package directory)
     let enumerator = local
         .enumerate_children(
             "standard::name,standard::type",
             gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
             gio::Cancellable::NONE,
         )
-        .context("Reading pacman local directory entries")?;
+        .context("Enumerating pacman local directory entries")?;
 
-    for entry in enumerator {
-        let entry = entry?;
-        if entry.file_type() == gio::FileType::Directory {
-            let pkgdir_name = entry.name();
-            let pkgdir = local.child(&pkgdir_name);
-
-            // desc file is required for pacman package metadata
-            let desc = pkgdir.child("desc");
-            if !desc.query_exists(gio::Cancellable::NONE) {
-                // skip packages without desc
+    for entry_res in enumerator {
+        let entry = match entry_res {
+            Ok(e) => e,
+            Err(err) => {
+                //Skip
                 continue;
             }
+        };
 
-            // load desc contents
-            let (desc_bytes, _) = desc
-                .load_contents(gio::Cancellable::NONE)
-                .with_context(|| format!("Loading desc for package dir '{}'", pkgdir_name.display()))?;
-            let mut pkg_meta = parse_desc_from_bytes(&desc_bytes)
-                .with_context(|| format!("Parsing desc for package '{}'", pkgdir_name.display()))?;
-
-            // optionally parse files file
-            let files_file = pkgdir.child("files");
-            if files_file.query_exists(gio::Cancellable::NONE) {
-                let (files_bytes, _) = files_file
-                    .load_contents(gio::Cancellable::NONE)
-                    .with_context(|| format!("Loading files for package '{}'", pkgdir_name.display()))?;
-                let files = parse_files_from_bytes(&files_bytes)
-                    .with_context(|| format!("Parsing files for package '{}'", pkgdir_name.display()))?;
-                pkg_meta.provided_files = files;
-            }
-
-            packages.insert(pkg_meta.pkgname.clone(), pkg_meta);
+        // Only directories (each package = subdir)
+        if entry.file_type() != gio::FileType::Directory {
+            continue;
         }
+
+        let pkgdir_name = entry.name();
+        let pkgdir = local.child(&pkgdir_name);
+
+        let desc = pkgdir.child("desc");
+
+        // Skip if "desc" is missing
+        if !desc.query_exists(gio::Cancellable::NONE) {
+            continue;
+        }
+
+        // Extra safety: check type + non-zero size
+        let info = match desc.query_info(
+            "standard::type,standard::size",
+            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+            gio::Cancellable::NONE,
+        ) {
+            Ok(i) => i,
+            Err(e) => {
+                //Skip
+                continue;
+            }
+        };
+
+        if info.file_type() != gio::FileType::Regular {
+            //Skip
+            continue;
+        }
+
+        if info.size() == 0 {
+            //Skip
+            continue;
+        }
+
+        // Load "desc" contents safely
+        let desc_bytes = match desc.load_contents(gio::Cancellable::NONE) {
+            Ok((bytes, _)) => bytes,
+            Err(e) => {
+                //Skip
+                continue;
+            }
+        };
+
+        // Parse metadata
+        let mut pkg_meta = match parse_desc_from_bytes(&desc_bytes) {
+            Ok(m) => m,
+            Err(e) => {
+                //Skip
+                continue;
+            }
+        };
+
+        // Try load "files"
+        let files_file = pkgdir.child("files");
+        if files_file.query_exists(gio::Cancellable::NONE) {
+            match files_file.load_contents(gio::Cancellable::NONE) {
+                Ok((files_bytes, _)) => {
+                    if let Ok(files) = parse_files_from_bytes(&files_bytes) {
+                        pkg_meta.provided_files = files;
+                    }
+                }
+                Err(e) => {
+                    //Skip
+                }
+            }
+        }
+
+        packages.insert(pkg_meta.pkgname.clone(), pkg_meta);
     }
 
     Ok(packages)
