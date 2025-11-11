@@ -75,6 +75,7 @@ pub struct ConfigYaml
     packages: Vec<String>, //Pakiety do instalacji
     services: Option<Vec<String>>, //Usługi systemd do włączenia
     scripts: Option<Vec<Utf8PathBuf>>, //Skrypty postinstalacyjne
+    branch: Option<String>, //Referencja do Commitu np. archlinux/x86_64/arch
     pacmanConf: Option<String> //Plik pacman.conf
 }
 
@@ -102,6 +103,16 @@ impl ConfigYaml
             (Some(self_inc), Some(other_inc)) => self_inc.extend(other_inc),
             (None, Some(other_inc)) => self.include = Some(other_inc),
             _ => {} // nic do zrobienia jeśli other.include == None
+        }
+
+        // 🔥 nadpisywanie branch, jeśli drugi plik go ma
+        if let Some(branch) = other.branch {
+            self.branch = Some(branch);
+        }
+
+        // 🔥 opcjonalnie — możesz też chcieć nadpisać pacmanConf, jeśli występuje
+        if let Some(pacman_conf) = other.pacmanConf {
+            self.pacmanConf = Some(pacman_conf);
         }
     }
 }
@@ -702,6 +713,22 @@ async fn run_inner(config: &ConfigYaml, opts: &ComposeImageOpts) -> Result<()> {
     let repo = ostree::Repo::open_at(libc::AT_FDCWD, &opts.ostree_repo.as_str(), gio::Cancellable::NONE)?;
     println!("Generating Commit...");
     let commit = generate_commit_from_rootfs(&repo, rootfs_path, modifier, Some(&creation_time))?;
+    if let Some(branch) = &config.branch {
+        if !branch.is_empty() {
+                repo.set_ref_immediate(
+                None,
+                branch,
+                Some(commit.as_str()),
+                gio::Cancellable::NONE,
+                )
+                .context("Setting branch")?;
+    }   else {
+        eprintln!("⚠️ Branch is empty, skipping ref creation");
+    }
+    } else {
+    eprintln!("⚠️ No branch specified in config.yaml, skipping ref creation");
+    }
+
     //Generate container image
 
     println!("✅ Commit {commit} exported to {}", opts.output);
