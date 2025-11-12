@@ -257,6 +257,22 @@ fn rebuild_with_layers(
 
         pacman_manager::install(root_path, pacman_cache.as_str(), &packages_vec)
             .context("Installing layered packages")?;
+
+        // Jako że pakiety pacmana mają /etc musimy przenieśc pliki i foldery z /etc o /usr/etc żeby deploy zadziałał
+        let etc_path = root_path.join("etc");
+        let usr_etc_path = root_path.join("usr/etc");
+        std::fs::create_dir_all(&usr_etc_path)?;
+
+        if etc_path.exists() {
+            for entry in std::fs::read_dir(&etc_path)? {
+                let entry = entry?;
+                let dest = usr_etc_path.join(entry.file_name());
+                std::fs::rename(entry.path(), dest)?;
+            }
+
+            std::fs::remove_dir_all(&etc_path)?;
+        }
+
     }
 
     // Calculate what was newly installed (for result)
@@ -473,14 +489,15 @@ fn deploy_commit(
     println!("   Commit: {}", commit);
 
     let output = Command::new("ostree")
-        .arg("admin")
-        .arg("deploy")
-        .arg(format!("--os={}", osname))
-        .arg("--sysroot=/")
-        .arg(format!("--repo={}", repo_path))
-        .arg(commit)
-        .output()
-        .context("Failed to spawn ostree admin deploy")?;
+    .arg("admin")
+    .arg("deploy")
+    .arg(format!("--os={}", osname))
+    .arg("--sysroot=/") // wskazuje katalog root systemu plików
+    .arg("--stage")
+    .arg(commit)        // refspec commit do wdrożenia
+    .output()
+    .context("Failed to spawn ostree admin deploy")?;
+
 
     if !output.status.success() {
         anyhow::bail!(
