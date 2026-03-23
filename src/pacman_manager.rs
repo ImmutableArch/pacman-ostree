@@ -56,7 +56,7 @@ pub(crate) fn install(root: &Path, cache: &str, packages: &[String]) -> Result<(
 /// Remove packages using pacman from given root.
 pub(crate) fn remove(root: &Path, cache: &str, packages: &[String]) -> Result<()> {
     let output = Command::new("pacman")
-        .arg("-Rns")
+        .arg("-Rdd")
         .arg("-r")
         .arg(root)
         .arg(format!("--cachedir={}", cache))

@@ -642,10 +642,15 @@ fn generate_commit_from_rootfs(
     let mut dict = VariantDict::new(None);
 
     // Ustawiamy metadane bootowalne
-    dict.insert(METADATA_KEY_BOOTABLE, &true.to_variant());
+    dict.insert(METADATA_KEY_BOOTABLE.as_str(), &true.to_variant());
+
     if !kernel_ver_str.is_empty() {
-        dict.insert(METADATA_KEY_LINUX, &kernel_ver_str.to_variant());
+        dict.insert(
+            METADATA_KEY_LINUX.as_str(),
+            &kernel_ver_str.to_variant(),
+        );
     }
+
     let metadata = dict.end();
 
     let ostree_root = repo.write_mtree(&root_mtree, cancellable)?;
