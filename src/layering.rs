@@ -16,6 +16,10 @@ use serde::{Deserialize, Serialize};
 use tar::Archive;
 use zstd::stream::read::Decoder;
 
+use crate::solver::SolvResolver;
+
+use crate::solver::{SolvResolver, SolverError};
+
 // ─────────────────────────────────────────────────────────────
 // Pacman Client-Side Package Layering
 // TODO: - Override package layering (like rpm-ostree overrides)
@@ -36,14 +40,12 @@ pub struct LayerRequest {
     pub replace: Vec<String>,
 }
 
-// Derive Serialize/Deserialize żeby można było zapisać do JSON
 #[derive(Serialize, Deserialize, Clone)]
 pub struct LayeredState {
     pub base_commit: String,
     pub layers: Vec<LayerEntry>,
 }
 
-// LayerOp musi być serializowalne — używamy tagged enum
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum LayerOp {
@@ -127,7 +129,6 @@ pub fn load_state() -> Result<LayeredState, Box<dyn Error>> {
     let path = Path::new(STATE_PATH);
 
     if !path.exists() {
-        // Pierwsza instalacja — zbuduj stan na podstawie bieżącego deploymentu
         let sysroot = Sysroot::new_default();
         sysroot.load(gio::Cancellable::NONE)?;
         let booted = sysroot
@@ -150,12 +151,10 @@ pub fn load_state() -> Result<LayeredState, Box<dyn Error>> {
 pub fn save_state(state: &LayeredState) -> Result<(), Box<dyn Error>> {
     let path = Path::new(STATE_PATH);
 
-    // Utwórz katalog jeśli nie istnieje
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Zapis atomowy: piszemy do pliku tymczasowego, potem rename
     let tmp_path = path.with_extension("json.tmp");
     {
         let file = File::create(&tmp_path)?;
@@ -172,7 +171,6 @@ pub fn save_state(state: &LayeredState) -> Result<(), Box<dyn Error>> {
 // OSTree helpers
 // ─────────────────────────────────────────────────────────────
 
-/// Checkoutuje commit OSTree do katalogu `dest`.
 pub fn checkout_commit(commit: &str, dest: &Path) -> Result<(), Box<dyn Error>> {
     println!("[ostree] Checking out commit: {}", commit);
 
@@ -200,8 +198,6 @@ pub fn checkout_commit(commit: &str, dest: &Path) -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
-/// Commituje zawartość `staged_dir` jako nową warstwę na bazie `parent_commit`.
-/// Zwraca checksum nowego commitu.
 pub fn commit_layer(
     parent_commit: &str,
     staged_dir: &Path,
@@ -237,7 +233,6 @@ pub fn commit_layer(
     Ok(checksum.to_string())
 }
 
-/// Deployuje podany commit jako nowy deployment (zachowując poprzedni jako rollback).
 pub fn deploy_commit(new_checksum: &str) -> Result<(), Box<dyn Error>> {
     println!("[ostree] Deploying commit: {}", new_checksum);
 
@@ -273,15 +268,11 @@ pub fn deploy_commit(new_checksum: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Usuwa stare commity z repo — zostawia tylko commity osiągalne z aktywnych
-/// deploymentów (bieżący + rollback).
 pub fn prune_old_commits() -> Result<(), Box<dyn Error>> {
     println!("[ostree] Pruning old commits...");
 
     let repo = Repo::open_at(libc::AT_FDCWD, OSTREE_REPO_PATH, gio::Cancellable::NONE)?;
 
-    // REFS_ONLY = nie usuwaj commitów osiągalnych z aktywnych refs/deploymentów
-    // depth 0 = zostaw tylko commity bezpośrednio wskazywane przez deploymenty
     let (_objects_total, objects_pruned, bytes_freed) = repo.prune(
         ostree::RepoPruneFlags::REFS_ONLY,
         0,
@@ -297,16 +288,74 @@ pub fn prune_old_commits() -> Result<(), Box<dyn Error>> {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Dependency & conflict resolution (używa SolvResolver)
+// ─────────────────────────────────────────────────────────────
+
+/// Rozwią zuje zależności pakietów używając naszego SolvResolvera.
+/// Zwraca listę wszystkich pakietów do zainstalowania (bez duplikatów).
+fn resolve_packages(
+    packages: &[String],
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let resolver = SolvResolver::new()
+        .map_err(|e| format!("Failed to initialize solver: {}", e))?;
+    
+    // Rozwiąż każdy pakiet oraz jego zależności
+    let mut all_resolved = HashSet::new();
+    
+    for pkg in packages {
+        let result = resolver.resolve_install(&[pkg.clone()])
+            .map_err(|e| format!("Failed to resolve '{}': {}", pkg, e))?;
+        
+        if !result.problems.is_empty() {
+            return Err(format!(
+                "Dependency conflict for '{}': {}",
+                pkg,
+                result.problems.join("; ")
+            ).into());
+        }
+        
+        all_resolved.extend(result.to_install);
+    }
+    
+    Ok(all_resolved.into_iter().collect())
+}
+
+/// Sprawdza konflikty pakietów do instalacji używając SolvResolvera.
+fn check_conflicts(
+    new_pkgs: &[String],
+    _layered_names: &HashSet<String>,
+) -> Result<(), Box<dyn Error>> {
+    let resolver = SolvResolver::new()
+        .map_err(|e| format!("Failed to initialize solver: {}", e))?;
+    
+    // Sprawdź czy solver wykryje jakieś konflikty
+    for pkg in new_pkgs {
+        let result = resolver.resolve_install(&[pkg.clone()])
+            .map_err(|e| format!("Failed to check conflicts for '{}': {}", pkg, e))?;
+        
+        if !result.problems.is_empty() {
+            return Err(format!(
+                "Package '{}' has conflicts: {}",
+                pkg,
+                result.problems.join("; ")
+            ).into());
+        }
+    }
+    
+    Ok(())
+}
+
+// ────────────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────
 // Package management
 // ─────────────────────────────────────────────────────────────
 
-/// Instaluje listę pakietów jako warstwy.
-/// Wczytuje istniejący stan z dysku, dodaje nowe warstwy, zapisuje i deployuje.
 pub fn install_packages(pkgs: Vec<String>) -> Result<LayeredState, Box<dyn Error>> {
     let mut state = load_state()?;
 
     // Zbierz pakiety już warstwowane z poprzednich sesji
-    let mut already_layered: HashSet<String> = state
+    let layered_names: HashSet<String> = state
         .layers
         .iter()
         .filter_map(|l| {
@@ -318,13 +367,14 @@ pub fn install_packages(pkgs: Vec<String>) -> Result<LayeredState, Box<dyn Error
         })
         .collect();
 
-    let base_installed = get_base_installed_packages()?;
+    // Walidacja przed jakąkolwiek operacją na repo
+    check_conflicts(&pkgs, &layered_names)?;
 
     for pkg in &pkgs {
         println!("[pacman-ostree] Processing package: {}", pkg);
 
-        let mut all_deps = resolve_packages(vec![pkg.clone()])?;
-        all_deps.retain(|p| !base_installed.contains(p) && !already_layered.contains(p));
+        // Użyj SolvResolvera do rozwiązania zależności
+        let all_deps = resolve_packages(&[pkg.clone()][..])?;
 
         if all_deps.is_empty() {
             println!("[pacman-ostree] {} and all deps already present, skipping.", pkg);
@@ -332,16 +382,16 @@ pub fn install_packages(pkgs: Vec<String>) -> Result<LayeredState, Box<dyn Error
         }
 
         let downloaded = download_packages(&all_deps)?;
-
         let staging_dir = PathBuf::from(format!("/tmp/pacman-ostree-staging-{}", pkg));
 
         let parent = state
             .layers
             .last()
             .map(|l| l.commit.as_str())
-            .unwrap_or(&state.base_commit);
+            .unwrap_or(&state.base_commit)
+            .to_string();
 
-        checkout_commit(parent, &staging_dir)?;
+        checkout_commit(&parent, &staging_dir)?;
 
         for pkg_path in &downloaded {
             unpack_package_to_staging(pkg_path, &staging_dir)?;
@@ -351,21 +401,21 @@ pub fn install_packages(pkgs: Vec<String>) -> Result<LayeredState, Box<dyn Error
             run_post_install_script(dep_name, &staging_dir)?;
         }
 
+        // Pobierz parent ponownie po potencjalnym push do state.layers
         let parent = state
             .layers
             .last()
             .map(|l| l.commit.as_str())
-            .unwrap_or(&state.base_commit);
+            .unwrap_or(&state.base_commit)
+            .to_string();
 
-        let checksum = commit_layer(parent, &staging_dir, pkg)?;
+        let checksum = commit_layer(&parent, &staging_dir, pkg)?;
 
         state.layers.push(LayerEntry {
             id: pkg.clone(),
             op: LayerOp::Add { pkg: pkg.clone() },
             commit: checksum,
         });
-
-        already_layered.extend(all_deps);
 
         if staging_dir.exists() {
             std::fs::remove_dir_all(&staging_dir)?;
@@ -384,19 +434,22 @@ pub fn install_packages(pkgs: Vec<String>) -> Result<LayeredState, Box<dyn Error
     Ok(state)
 }
 
-/// Usuwa pakiet z warstw przez replay wszystkich pozostałych layerów od base commitu.
-///
-/// Strategia:
-/// 1. Załaduj stan
-/// 2. Usuń wpis dla `pkg_name` z listy warstw
-/// 3. Odtwórz wszystkie pozostałe warstwy od zera (checkout base → unpack każdej)
-/// 4. Zdeploy nowy ostatni commit
-/// 5. Zapisz stan
 pub fn remove_packages(pkgs: &[String]) -> Result<LayeredState, Box<dyn Error>> {
     let mut state = load_state()?;
 
     let to_remove: HashSet<String> = pkgs.iter().cloned().collect();
 
+    // Sprawdź czy wszystkie pakiety do usunięcia faktycznie są warstwowane
+    for pkg in pkgs {
+        let exists = state.layers.iter().any(|l| {
+            matches!(&l.op, LayerOp::Add { pkg: p } if p == pkg)
+        });
+        if !exists {
+            return Err(format!("Package '{}' is not layered", pkg).into());
+        }
+    }
+
+    // Zbierz pakiety które zostają w oryginalnej kolejności
     let remaining_pkgs: Vec<String> = state
         .layers
         .iter()
@@ -410,21 +463,22 @@ pub fn remove_packages(pkgs: &[String]) -> Result<LayeredState, Box<dyn Error>> 
         })
         .collect();
 
+    // Wyczyść stare warstwy — odbudujemy je od base
     state.layers.clear();
 
     if remaining_pkgs.is_empty() {
+        println!("[pacman-ostree] No layers remaining, deploying base commit.");
         deploy_commit(&state.base_commit)?;
         save_state(&state)?;
         prune_old_commits()?;
         return Ok(state);
     }
 
-    let base_installed = get_base_installed_packages()?;
-    let mut already_layered: HashSet<String> = HashSet::new();
-
+    // Replay: odbuduj każdą pozostałą warstwę od base
     for pkg in &remaining_pkgs {
-        let mut all_deps = resolve_packages(vec![pkg.clone()])?;
-        all_deps.retain(|p| !base_installed.contains(p) && !already_layered.contains(p));
+        println!("[pacman-ostree] Replaying layer: {}", pkg);
+
+        let all_deps = resolve_packages(&[pkg.clone()][..])?;
 
         if all_deps.is_empty() {
             continue;
@@ -437,9 +491,10 @@ pub fn remove_packages(pkgs: &[String]) -> Result<LayeredState, Box<dyn Error>> 
             .layers
             .last()
             .map(|l| l.commit.as_str())
-            .unwrap_or(&state.base_commit);
+            .unwrap_or(&state.base_commit)
+            .to_string();
 
-        checkout_commit(parent, &staging_dir)?;
+        checkout_commit(&parent, &staging_dir)?;
 
         for pkg_path in &downloaded {
             unpack_package_to_staging(pkg_path, &staging_dir)?;
@@ -449,15 +504,21 @@ pub fn remove_packages(pkgs: &[String]) -> Result<LayeredState, Box<dyn Error>> 
             run_post_install_script(dep_name, &staging_dir)?;
         }
 
-        let checksum = commit_layer(parent, &staging_dir, pkg)?;
+        // Pobierz parent ponownie po potencjalnym push
+        let parent = state
+            .layers
+            .last()
+            .map(|l| l.commit.as_str())
+            .unwrap_or(&state.base_commit)
+            .to_string();
+
+        let checksum = commit_layer(&parent, &staging_dir, pkg)?;
 
         state.layers.push(LayerEntry {
             id: pkg.clone(),
             op: LayerOp::Add { pkg: pkg.clone() },
             commit: checksum,
         });
-
-        already_layered.extend(all_deps);
 
         if staging_dir.exists() {
             std::fs::remove_dir_all(&staging_dir)?;
@@ -468,9 +529,10 @@ pub fn remove_packages(pkgs: &[String]) -> Result<LayeredState, Box<dyn Error>> 
         .layers
         .last()
         .map(|l| l.commit.as_str())
-        .unwrap_or(&state.base_commit);
+        .unwrap_or(&state.base_commit)
+        .to_string();
 
-    deploy_commit(deploy_target)?;
+    deploy_commit(&deploy_target)?;
     save_state(&state)?;
     prune_old_commits()?;
 
@@ -480,50 +542,6 @@ pub fn remove_packages(pkgs: &[String]) -> Result<LayeredState, Box<dyn Error>> 
 // ─────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────
-
-fn get_base_installed_packages() -> Result<HashSet<String>, Box<dyn Error>> {
-    let conf = Config::new()?;
-    let alpm = alpm_with_conf(&conf)?;
-    let installed: HashSet<String> = alpm
-        .localdb()
-        .pkgs()
-        .iter()
-        .map(|p| p.name().to_string())
-        .collect();
-    Ok(installed)
-}
-
-fn resolve_packages(initial: Vec<String>) -> Result<Vec<String>, Box<dyn Error>> {
-    let conf = Config::new()?;
-    let alpm = alpm_with_conf(&conf)?;
-    let syncdbs = alpm.syncdbs();
-
-    let mut resolved: HashSet<String> = HashSet::new();
-    let mut queue = initial;
-
-    while let Some(current) = queue.pop() {
-        if resolved.contains(&current) {
-            continue;
-        }
-
-        let pkg = syncdbs
-            .iter()
-            .filter_map(|db| db.pkg(current.clone()).ok())
-            .next()
-            .ok_or_else(|| format!("Package not found in syncdbs: {}", current))?;
-
-        resolved.insert(current);
-
-        for dep in pkg.depends().iter() {
-            let dep_name = dep.name().to_string();
-            if !resolved.contains(&dep_name) {
-                queue.push(dep_name);
-            }
-        }
-    }
-
-    Ok(resolved.into_iter().collect())
-}
 
 fn unpack_package_to_staging(pkg_path: &str, staging_dir: &Path) -> Result<(), Box<dyn Error>> {
     std::fs::create_dir_all(staging_dir)?;

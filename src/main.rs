@@ -8,6 +8,7 @@ mod compose;
 mod pacman_manager;
 mod container;
 mod layering;
+mod solver;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "A program that connects pacman with ostree")]
