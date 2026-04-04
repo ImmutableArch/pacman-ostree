@@ -1,0 +1,19 @@
+[package]
+name = "pacman-ostree"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alpm = "5.0.2"
+alpm-db = "0.2.2"
+alpm-utils = "5.0.0"
+pacmanconf = "3.1.0"
+anyhow = "1.0"
+serde = "1.0.228"
+serde_json = "1.0.149"
+serde_yaml = "0.9.34"
+ostree-ext = { git = "https://github.com/containers/bootc" }
+resolvo = "0.10.2"
+tokio = "1.51.0"
+futures = "0.3.32"
+indexmap = "2.13.1"
