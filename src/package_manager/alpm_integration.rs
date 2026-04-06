@@ -1,147 +1,264 @@
-use alpm::{Alpm, Db, Package as AlpmPkg};
+use alpm::{Alpm, DepMod, Package as AlpmPkg};
 use alpm_utils::alpm_with_conf;
 use pacmanconf::Config;
 use crate::package_solver::{AlpmPool, AlpmPackage, AlpmDep, AlpmProvide};
 use anyhow::{Result, Context};
 use std::path::Path;
 
-/// Integracja z rzeczywistą bazą ALPM pacmana
+/// Integration with the actual ALPM Pacman database
 pub struct AlpmRepository {
     alpm: Alpm,
 }
 
 impl AlpmRepository {
-    /// Utwórz nowe repository z domyślną konfiguracją pacmana
+    /// Create a new repository with default pacman config
     pub fn new() -> Result<Self> {
         let config = Config::new()
             .context("Failed to load pacman config")?;
-
         let alpm = alpm_utils::alpm_with_conf(&config)
             .context("Failed to initialize ALPM")?;
-
         Ok(Self { alpm })
     }
 
-    /// Utwórz nowe repository z custom ścieżką do pacman.conf
+    /// Create a repository from a custom pacman.conf path
     pub fn with_config(config_path: &Path) -> Result<Self> {
         let config = Config::from_file(config_path)
             .context("Failed to load custom pacman config")?;
-
         let alpm = alpm_utils::alpm_with_conf(&config)
             .context("Failed to initialize ALPM with custom config")?;
-
         Ok(Self { alpm })
     }
 
-    /// Pobierz wszystkie dostępne pakiety i załaduj do AlpmPool
+    /// Create a repository from custom pacman.conf path and rootdir
+    pub fn with_config_and_rootdir(config_path: &Path, rootdir: &str) -> Result<Self> {
+        let mut config = Config::from_file(config_path)
+            .context("Failed to load custom pacman config")?;
+        config.root_dir = rootdir.to_string();
+        config.db_path = format!("{}/var/lib/pacman", rootdir);
+        let alpm = alpm_utils::alpm_with_conf(&config)
+            .context("Failed to initialize ALPM with custom rootdir")?;
+        Ok(Self { alpm })
+    }
+
+    /// Load only sync DB into the pool
     pub fn load_to_pool(&self) -> Result<AlpmPool> {
+        self.load_sync_to_pool()
+    }
+
+    /// Load sync + local DB into the pool
+    pub fn load_all_to_pool(&self) -> Result<AlpmPool> {
         let mut pool = AlpmPool::new();
 
-        // Iteruj przez wszystkie dostępne bazy (repos)
-        let dbs = self.alpm.syncdbs();
-        
-        for db in dbs {
-            let repo_name = db.name();
-            
-            // Iteruj przez wszystkie pakiety w każdej bazie
+        for db in self.alpm.syncdbs() {
             for pkg in db.pkgs() {
-                let alpm_pkg = self.convert_package(&pkg, repo_name)?;
+                let alpm_pkg = self.convert_package(&pkg, db.name())?;
                 pool.add_package(alpm_pkg);
             }
         }
 
-        Ok(pool)
-    }
-
-    /// Pobierz pakiety niezainstalowane (z repozytoriów)
-    pub fn load_sync_to_pool(&self) -> Result<AlpmPool> {
-        let mut pool = AlpmPool::new();
-        let dbs = self.alpm.syncdbs();
-
-        for db in dbs {
-            let repo_name = db.name();
-            for pkg in db.pkgs() {
-                let alpm_pkg = self.convert_package(&pkg, repo_name)?;
-                pool.add_package(alpm_pkg);
-            }
-        }
-
-        Ok(pool)
-    }
-
-    /// Pobierz tylko zainstalowane pakiety
-    pub fn load_local_to_pool(&self) -> Result<AlpmPool> {
-        let mut pool = AlpmPool::new();
-        
-        let local_db = self.alpm.localdb();
-        for pkg in local_db.pkgs() {
-            let alpm_pkg = self.convert_package_local(&pkg)?;
+        for pkg in self.alpm.localdb().pkgs() {
+            let alpm_pkg = self.convert_package(&pkg, "local")?;
             pool.add_package(alpm_pkg);
         }
 
+        pool.finalize_virtuals();
         Ok(pool)
     }
 
-    /// Pobierz konkretny pakiet
+    /// Load only sync DB into the pool
+    pub fn load_sync_to_pool(&self) -> Result<AlpmPool> {
+        let mut pool = AlpmPool::new();
+
+        for db in self.alpm.syncdbs() {
+            for pkg in db.pkgs() {
+                let alpm_pkg = self.convert_package(&pkg, db.name())?;
+                pool.add_package(alpm_pkg);
+            }
+        }
+
+        pool.finalize_virtuals();
+        Ok(pool)
+    }
+
+    /// Load only local DB into the pool
+    pub fn load_local_to_pool(&self) -> Result<AlpmPool> {
+        let mut pool = AlpmPool::new();
+
+        for pkg in self.alpm.localdb().pkgs() {
+            let alpm_pkg = self.convert_package(&pkg, "local")?;
+            pool.add_package(alpm_pkg);
+        }
+
+        pool.finalize_virtuals();
+        Ok(pool)
+    }
+
+    /// Download packages to cache using ALPM fetch_pkgurl
+    pub fn download_packages_to_cache(
+        &mut self,
+        pkg_names: &[String],
+        cache_dir: &str,
+    ) -> Result<()> {
+        std::fs::create_dir_all(cache_dir)?;
+        self.alpm.set_cachedirs([cache_dir].iter())
+            .map_err(|e| anyhow::anyhow!("Failed to set cache directories: {}", e))?;
+
+        use alpm::AlpmListMut;
+        let mut urls: Vec<String> = Vec::new();
+
+        for pkg_name in pkg_names {
+            let mut found = false;
+            for db in self.alpm.syncdbs() {
+                if let Ok(pkg) = db.pkg(pkg_name.as_str()) {
+                    if let Some(filename) = pkg.filename() {
+                        if let Some(server) = db.servers().iter().next() {
+                            let url = if server.ends_with('/') {
+                                format!("{}{}", server, filename)
+                            } else {
+                                format!("{}/{}", server, filename)
+                            };
+                            urls.push(url);
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !found {
+                println!("Skipped {} - no URL found", pkg_name);
+            }
+        }
+
+        if urls.is_empty() {
+            return Ok(());
+        }
+
+        let mut url_list: AlpmListMut<String> = AlpmListMut::new();
+        for url in &urls {
+            url_list.push(url.clone());
+        }
+
+        let fetched = self.alpm.fetch_pkgurl(url_list)?;
+        println!("Downloaded {} packages", fetched.len());
+
+        Ok(())
+    }
+
+    /// Find a package in sync DB
     pub fn find_package(&self, name: &str) -> Result<Option<AlpmPackage>> {
-        let dbs = self.alpm.syncdbs();
-        
-        for db in dbs {
+        for db in self.alpm.syncdbs() {
             if let Ok(pkg) = db.pkg(name) {
                 return Ok(Some(self.convert_package(&pkg, db.name())?));
             }
         }
-
         Ok(None)
     }
 
-    /// Konwertuj pakiet ALPM do wewnętrznej reprezentacji
-    fn convert_package(&self, pkg: &AlpmPkg, repo: &str) -> Result<AlpmPackage> {
-        // Pobierz zależności
-        let deps = pkg.depends()
-            .iter()
-            .map(|dep| {
-                let name = dep.name().to_string();
-                let ver_str = dep.version()
-                    .map(|v| v.as_str())
-                    .unwrap_or("0");
-                let constraint = format!(">= {}", ver_str);
-                AlpmDep { name, constraint }
-            })
-            .collect();
+    /// Get package file path
+    pub fn get_package_file_path(&self, name: &str) -> Result<Option<String>> {
+        for db in self.alpm.syncdbs() {
+            if let Ok(pkg) = db.pkg(name) {
+                if let Some(filename) = pkg.filename() {
+                    return Ok(Some(filename.to_string()));
+                }
+            }
+        }
+        Ok(None)
+    }
 
-        // Pobierz provides
-        let provides = pkg.provides()
-            .iter()
-            .map(|provide| {
-                let virtual_name = provide.name().to_string();
-                let virtual_version = provide.version()
-                    .map(|v| v.as_str().to_string())
-                    .unwrap_or_else(|| "1.0".to_string());
-                AlpmProvide { virtual_name, virtual_version }
-            })
-            .collect();
+    /// Expand group or package names into a list of packages
+    pub fn expand_names(&self, names: Vec<&str>) -> Result<Vec<String>> {
+        let mut expanded = Vec::new();
 
-        // Pobierz konflikty
-        let conflicts = pkg.conflicts()
-            .iter()
-            .map(|conflict| conflict.name().to_string())
-            .collect();
+        for name in names {
+            let mut found = false;
 
-        // Pobierz rozmiar pakietu (zwraca i64, konwertuj na u64)
-        let size = {
-            let sz = pkg.size();
-            if sz > 0 { sz as u64 } else { 0 }
+            'db_loop: for db in self.alpm.syncdbs() {
+                let mut group_packages = Vec::new();
+                for pkg in db.pkgs() {
+                    if pkg.groups().iter().any(|g| g == name) {
+                        group_packages.push(pkg.name().to_string());
+                    }
+                }
+
+                if !group_packages.is_empty() {
+                    for pkg_name in group_packages {
+                        expanded.push(pkg_name);
+                    }
+                    found = true;
+                    break 'db_loop;
+                }
+            }
+
+            if !found {
+                if self.find_package(name)?.is_some() {
+                    expanded.push(name.to_string());
+                    found = true;
+                }
+            }
+
+            if !found {
+                anyhow::bail!("Package or group '{}' not found", name);
+            }
+        }
+
+        Ok(expanded)
+    }
+
+    /// Get repository names
+    pub fn get_repos(&self) -> Vec<String> {
+        self.alpm.syncdbs().iter().map(|db| db.name().to_string()).collect()
+    }
+
+    /// Database stats
+    pub fn get_stats(&self) -> String {
+        let dbs = self.alpm.syncdbs();
+        let mut total = 0;
+        let mut info = Vec::new();
+        for db in dbs {
+            let count = db.pkgs().len();
+            total += count;
+            info.push(format!("{}: {} packages", db.name(), count));
+        }
+        format!("Total repositories: {}, Total packages: {}\n{}", info.len(), total, info.join("\n"))
+    }
+
+    // ── Package conversion ──────────────────────────────────────────────────
+
+    fn convert_dep(dep: &alpm::Dep) -> AlpmDep {
+        let name = dep.name().to_string();
+        let constraint = match dep.version() {
+            None => String::new(),
+            Some(ver) => {
+                let op = match dep.depmod() {
+                    DepMod::Any => return AlpmDep { name, constraint: String::new() },
+                    DepMod::Eq  => "=",
+                    DepMod::Ge  => ">=",
+                    DepMod::Le  => "<=",
+                    DepMod::Gt  => ">",
+                    DepMod::Lt  => "<",
+                };
+                format!("{} {}", op, ver.as_str())
+            }
         };
+        AlpmDep { name, constraint }
+    }
 
-        // Wydziel pkgrel z wersji (np. "8.7.1-1" -> version="8.7.1", pkgrel="1")
+    fn convert_package(&self, pkg: &AlpmPkg, repo: &str) -> Result<AlpmPackage> {
+        let deps = pkg.depends().iter().map(|d| Self::convert_dep(d)).collect();
+        let provides = pkg.provides().iter().map(|p| {
+            AlpmProvide {
+                virtual_name: p.name().to_string(),
+                virtual_version: p.version().map(|v| v.as_str().to_string()).unwrap_or_else(|| "0".to_string()),
+            }
+        }).collect();
+        let conflicts = pkg.conflicts().iter().map(|c| c.name().to_string()).collect();
+        let size = pkg.size().max(0) as u64;
+
         let full_version = pkg.version().as_str();
-        let (version, pkgrel) = if let Some(last_dash) = full_version.rfind('-') {
-            let ver = full_version[..last_dash].to_string();
-            let rel = full_version[last_dash + 1..].to_string();
-            (ver, rel)
-        } else {
-            (full_version.to_string(), "1".to_string())
+        let (version, pkgrel) = match full_version.rfind('-') {
+            Some(pos) => (full_version[..pos].to_string(), full_version[pos+1..].to_string()),
+            None => (full_version.to_string(), "1".to_string()),
         };
 
         Ok(AlpmPackage {
@@ -155,45 +272,11 @@ impl AlpmRepository {
             conflicts,
         })
     }
-
-    /// Konwertuj zainstalowany pakiet (lokalny)
-    fn convert_package_local(&self, pkg: &AlpmPkg) -> Result<AlpmPackage> {
-        // Zainstalowane pakiety mają repo "local"
-        self.convert_package(pkg, "local")
-    }
-
-    /// Pobierz informacje o repozytorium
-    pub fn get_repos(&self) -> Vec<String> {
-        self.alpm.syncdbs()
-            .iter()
-            .map(|db| db.name().to_string())
-            .collect()
-    }
-
-    /// Pobierz statystykę bazy
-    pub fn get_stats(&self) -> String {
-        let dbs = self.alpm.syncdbs();
-        let mut total_packages = 0;
-        let mut repo_info = Vec::new();
-
-        for db in dbs {
-            let count = db.pkgs().len();
-            total_packages += count;
-            repo_info.push(format!("{}: {} packages", db.name(), count));
-        }
-
-        format!(
-            "Total repositories: {}, Total packages: {}\n{}",
-            dbs.len(),
-            total_packages,
-            repo_info.join("\n")
-        )
-    }
 }
 
 impl Default for AlpmRepository {
     fn default() -> Self {
-        Self::new().expect("Failed to initialize ALPM Repository - is pacman properly configured?")
+        Self::new().expect("Failed to initialize ALPM Repository")
     }
 }
 
@@ -203,7 +286,6 @@ mod tests {
 
     #[test]
     fn test_repository_creation() {
-        // To test będzie działać na systemie z zainstalowanym pacmanem
         if let Ok(repo) = AlpmRepository::new() {
             let stats = repo.get_stats();
             println!("{}", stats);

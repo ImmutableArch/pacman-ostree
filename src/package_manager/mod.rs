@@ -1,10 +1,12 @@
 pub mod config;
 pub mod installer;
 pub mod alpm_integration;
+pub mod pacman_hooks;
 
-pub use installer::PackageManager;
+pub use installer::{PackageManager, InstallResult, PackageInfo, InstallReason};
 pub use config::{PacmanConfig};
 pub use alpm_integration::AlpmRepository;
+pub use pacman_hooks::{PacmanHook, HookWhen};
 
 use serde::{Deserialize, Serialize};
 

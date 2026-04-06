@@ -9,9 +9,6 @@ use std::rc::Rc;
 
 // ──────────────────────────────────────────────
 // Provider
-//
-// AlpmPool jest owinięty w Rc aby móc być współdzielony między
-// PackageManager'em i Provider'em bez klonowania
 // ──────────────────────────────────────────────
 
 pub struct AlpmDependencyProvider {
@@ -27,7 +24,8 @@ impl AlpmDependencyProvider {
         &self.pool
     }
 
-    /// Sprawdź czy dwie requirements konfliktują - vracia conflicts jeśli znaleziony
+    /// Walidacja konfliktów przed wywołaniem solvera —
+    /// wykrywa konflikty między jawnie żądanymi pakietami
     pub fn validate_requirements(
         &self,
         requirement_names: &[NameId],
@@ -37,12 +35,12 @@ impl AlpmDependencyProvider {
                 let name_a = requirement_names[i];
                 let name_b = requirement_names[j];
                 if self.pool.conflicts(name_a, name_b) {
-                    let name_a_str = self.pool.resolve_name(name_a);
-                    let name_b_str = self.pool.resolve_name(name_b);
+                    let str_a = self.pool.resolve_name(name_a);
+                    let str_b = self.pool.resolve_name(name_b);
                     return Err((
                         name_a,
                         name_b,
-                        format!("'{}' conflicts with '{}'", name_a_str, name_b_str),
+                        format!("'{}' conflicts with '{}'", str_a, str_b),
                     ));
                 }
             }
@@ -62,7 +60,6 @@ impl Interner for AlpmDependencyProvider {
     }
 
     fn display_name(&self, name: NameId) -> impl std::fmt::Display + '_ {
-        // resolve_name zwraca String, więc brak problemu z lifetime
         self.pool.resolve_name(name)
     }
 
@@ -88,12 +85,10 @@ impl Interner for AlpmDependencyProvider {
         &self,
         version_set_union: VersionSetUnionId,
     ) -> impl Iterator<Item = VersionSetId> {
-        // resolve_union zwraca Vec (owned), iterator jest niezależny od borrows
         self.pool.resolve_union(version_set_union).into_iter()
     }
 
     fn resolve_condition(&self, _condition: ConditionId) -> Condition {
-        // Nie używamy conditional dependencies
         Condition::Requirement(VersionSetId(0))
     }
 }
@@ -124,37 +119,55 @@ impl DependencyProvider for AlpmDependencyProvider {
         solvables.sort_by(|&a, &b| {
             let va = &self.pool.resolve_solvable(a).version;
             let vb = &self.pool.resolve_solvable(b).version;
-            // Sortuj od najnowszej do najstarszej (descending)
+            // Najnowsza wersja pierwsza (descending)
             match alpm::vercmp(vb.as_bytes(), va.as_bytes()) {
-                std::cmp::Ordering::Less => std::cmp::Ordering::Greater,
-                std::cmp::Ordering::Equal => std::cmp::Ordering::Equal,
+                std::cmp::Ordering::Less    => std::cmp::Ordering::Greater,
+                std::cmp::Ordering::Equal   => std::cmp::Ordering::Equal,
                 std::cmp::Ordering::Greater => std::cmp::Ordering::Less,
             }
         });
     }
 
     async fn get_dependencies(&self, solvable: SolvableId) -> Dependencies {
-        let deps      = self.pool.get_deps(solvable).to_vec();
-        let conflicts = self.pool.get_conflicts(solvable).to_vec();
+        let deps           = self.pool.get_deps(solvable).to_vec();
+        let conflicts      = self.pool.get_conflicts(solvable).to_vec();
+        let solvable_name  = self.pool.get_package_name(solvable).to_string();
 
         let mut requirements: Vec<ConditionalRequirement> = Vec::new();
-        let mut constrains:   Vec<VersionSetId> = Vec::new();
+        let mut constrains:   Vec<VersionSetId>           = Vec::new();
 
-        // Dodaj zależności
         for dep in &deps {
+            // Pomiń soname/virtual deps (.so) — zbyt restrykcyjne dla resolvera
+            if dep.name.contains(".so") {
+                continue;
+            }
+
             let name_id = self.pool.intern_name(&dep.name);
             let vs_id   = self.pool.intern_version_set(name_id, &dep.constraint);
             requirements.push(Requirement::Single(vs_id).into());
         }
 
-        // Dodaj konflikty jako constraints negacyjne
-        // Konflikt: jeśli A jest zainstalowany, B musi być wykluczone
-        // Modelujemy to poprzez "version set" który będzie zawierał wszystkie wersje pakietu konfliktującego
         for conflict in &conflicts {
+            // Pomiń self-konflikt — pakiet nie może konfliktować sam ze sobą
+            if conflict == &solvable_name {
+                continue;
+            }
+
+            // Pomiń konflikty z własnym provide (np. iptables-nft provides iptables
+            // i conflicts iptables — to jest legalne ale nie powinno blokować solvera)
+            // Sprawdź czy solvable sam dostarcza ten provide
+            let provides_self = self.pool
+                .get_candidates_for(self.pool.intern_name(conflict))
+                .map(|c| c.candidates.contains(&solvable))
+                .unwrap_or(false);
+
+            if provides_self {
+                continue;
+            }
+
             let name_id = self.pool.intern_name(conflict);
-            // ">= 0" oznacza dowolną wersję - to będzie constraint który wymaga że
-            // żaden pakiet o tej nazwie nie może być zainstalowany
-            let vs_id   = self.pool.intern_version_set(name_id, ">= 0");
+            // Constraint pusty = "dowolna wersja tego pakietu"
+            let vs_id   = self.pool.intern_version_set(name_id, "");
             constrains.push(vs_id);
         }
 
