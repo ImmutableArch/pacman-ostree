@@ -52,6 +52,7 @@ const IGNORED_HOOKS: &[&str] = &[
     "70-dkms-upgrade.hook",
     "71-dkms-remove.hook",
     "90-mkinitcpio-install.hook",
+    "35-systemd-udev-reload.hook",
 ];
 
 pub fn parse_hook_file(path: &Path) -> anyhow::Result<PacmanHook> {

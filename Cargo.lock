@@ -1930,7 +1930,7 @@ dependencies = [
  "hmac",
  "libc",
  "log",
- "nix",
+ "nix 0.29.0",
  "nom",
  "once_cell",
  "serde",
@@ -2055,6 +2055,18 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "memoffset",
+]
+
+[[package]]
+name = "nix"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
+dependencies = [
+ "bitflags 2.11.0",
+ "cfg-if 1.0.4",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]
@@ -2269,10 +2281,16 @@ dependencies = [
  "alpm-db",
  "alpm-utils",
  "anyhow",
+ "camino",
+ "cap-std 4.0.2",
+ "clap",
+ "console 0.16.3",
  "futures",
  "glob",
  "indexmap 2.13.1",
  "indicatif 0.18.4",
+ "libc",
+ "nix 0.30.1",
  "ostree-ext",
  "pacmanconf",
  "resolvo",
@@ -2280,6 +2298,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "spinner",
+ "tempfile",
  "tokio",
 ]
 

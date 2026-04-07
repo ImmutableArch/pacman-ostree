@@ -1,5 +1,9 @@
 mod package_manager;
 mod package_solver;
+mod compose;
+mod composepost;
+mod bubblewrap;
+mod initramfs;
 
 use package_solver::{AlpmPool, AlpmPackage, AlpmDep, AlpmProvide};
 use package_manager::{AlpmRepository, PackageManager};
@@ -179,7 +183,7 @@ async fn test_case_3_package_installer() -> anyhow::Result<()> {
         }
         Err(e) => {
             println!("⚠️  Installation failed: {}", e);
-            let _ = fs::remove_dir_all(dest);
+            //let _ = fs::remove_dir_all(dest);
         }
     }
 

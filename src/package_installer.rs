@@ -10,6 +10,10 @@ use std::io::Write;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use crate::bubblewrap::{Bubblewrap, BubblewrapMutability};
+
+use indicatif::ProgressStyle;
+use console::style;
 
 #[derive(Debug)]
 struct PackageScripts {
@@ -68,7 +72,7 @@ async fn resolve_package_install(
     let mut pool = repo.load_sync_to_pool()
         .map_err(|e| anyhow::anyhow!("Failed to load repository: {}", e))?;
 
-    let dest_db_path = format!("{}/var/lib/pacman/local", dest);
+    let dest_db_path = format!("{}/usr/share/pacman/local", dest);
     if Path::new(&dest_db_path).exists() {
         if let Ok(local_packages) = load_local_db_from_files(dest) {
             let mut local_pool = AlpmPool::new();
@@ -172,6 +176,7 @@ pub async fn unpack_packages(install_result: &InstallResult, dest: &str) -> anyh
             let has_post = content.contains("post_install()");
 
             if has_pre {
+                println!("Running pre_install for {}...", pkg_name);
                 run_install_script_sandboxed(&content, dest, pkg_name, "pre_install")?;
             }
 
@@ -204,6 +209,7 @@ pub async fn unpack_packages(install_result: &InstallResult, dest: &str) -> anyh
                 &scripts.pkg_name,
                 "post_install",
             )?;
+            println!("Ran post_install for {}", scripts.pkg_name);
         }
     }
 
@@ -289,75 +295,6 @@ fn collect_installed_files(
     Ok(all_files)
 }
 
-fn run_install_script_sandboxed(
-    script_content: &str,
-    dest: &str,
-    pkg_name: &str,
-    function_name: &str,
-) -> anyhow::Result<()> {
-    let script_path = format!("/tmp/.install-{}-{}.sh", pkg_name, function_name);
-
-    let full_script = format!(
-        "#!/bin/bash\nset -e\n\n{}\n\n{}\n",
-        script_content, function_name
-    );
-
-    std::fs::write(&script_path, &full_script)?;
-
-    let mut cmd = build_bwrap_base(dest);
-    cmd.arg("--bind").arg(&script_path).arg("/run/script.sh")
-        .arg("--")
-        .arg("/bin/bash").arg("/run/script.sh");
-
-    let status = cmd.status()?;
-
-    let _ = std::fs::remove_file(&script_path);
-
-    if !status.success() {
-        anyhow::bail!("Script failed: {} ({:?})", pkg_name, status.code());
-    }
-
-    Ok(())
-}
-
-fn run_hook_sandboxed(
-    hook: &PacmanHook,
-    dest: &str,
-    matched_targets: &[String],
-) -> anyhow::Result<()> {
-    let parts: Vec<&str> = hook.action.exec.split_whitespace().collect();
-
-    if parts.is_empty() {
-        anyhow::bail!("Empty hook exec: {}", hook.name);
-    }
-
-    let mut cmd = build_bwrap_base(dest);
-    cmd.arg("--");
-    cmd.args(&parts);
-
-    if hook.action.needs_targets {
-        cmd.stdin(Stdio::piped());
-    }
-
-    let mut child = cmd.spawn()?;
-
-    if hook.action.needs_targets {
-        if let Some(mut stdin) = child.stdin.take() {
-            for target in matched_targets {
-                writeln!(stdin, "{}", target)?;
-            }
-        }
-    }
-
-    let status = child.wait()?;
-
-    if !status.success() {
-        anyhow::bail!("Hook failed: {} ({:?})", hook.name, status.code());
-    }
-
-    Ok(())
-}
-
 pub async fn write_package_to_database(
     pkg_info: &PackageInfo,
     dest: &str,
@@ -365,7 +302,7 @@ pub async fn write_package_to_database(
     let pkg = &pkg_info.package;
     let entry_name = format!("{}-{}-{}", pkg.name, pkg.version, pkg.pkgrel);
 
-    let db_dir = format!("{}/var/lib/pacman/local/{}", dest, entry_name);
+    let db_dir = format!("{}/usr/share/pacman/local/{}", dest, entry_name);
     std::fs::create_dir_all(&db_dir)?;
 
     std::fs::write(
@@ -383,7 +320,7 @@ pub async fn write_package_to_database(
 }
 
 pub fn load_local_db_from_files(dest: &str) -> anyhow::Result<Vec<AlpmPackage>> {
-    let local_db = format!("{}/var/lib/pacman/local", dest);
+    let local_db = format!("{}/usr/share/pacman/local", dest);
     let mut packages = Vec::new();
 
     let entries = match std::fs::read_dir(&local_db) {
@@ -449,28 +386,75 @@ pub fn load_local_db_from_files(dest: &str) -> anyhow::Result<Vec<AlpmPackage>> 
     Ok(packages)
 }
 
-fn build_bwrap_base(dest: &str) -> Command {
-    let mut cmd = Command::new("bwrap");
+fn build_bwrap_base(dest: &str) -> anyhow::Result<Bubblewrap> {
+    let mut bwrap = Bubblewrap::new(dest)?;
+    bwrap.prepend_rootfs_bind(dest, "/");
 
-    let mut cmd = Command::new("bwrap");
-    cmd
-        .arg("--bind").arg(dest).arg("/")
-        .arg("--proc").arg("/proc")
-        .arg("--dev").arg("/dev")
-        .arg("--ro-bind").arg("/sys").arg("/sys")
-        .arg("--unshare-net")
-        .arg("--unshare-ipc")
-        .arg("--cap-drop").arg("ALL")
-        .arg("--cap-add").arg("cap_chown")
-        .arg("--cap-add").arg("cap_setgid")
-        .arg("--cap-add").arg("cap_setuid")
-        .arg("--cap-add").arg("cap_dac_override")
-        .arg("--cap-add").arg("cap_fowner")
-        .arg("--tmpfs").arg("/tmp")
-        .arg("--tmpfs").arg("/run")
-        .arg("--chdir").arg("/")
-        .arg("--setenv").arg("DBUS_SESSION_BUS_ADDRESS").arg("disabled:")
-        .arg("--setenv").arg("SYSTEMD_OFFLINE").arg("1")
-        .arg("--setenv").arg("container").arg("systemd-nspawn");
-    cmd
+    // dodatkowe bindy z oryginalnego Command
+    bwrap.bind_read("/sys", "/sys");
+
+    // dodatkowe katalogi tmp
+    bwrap.bind_readwrite("/tmp", "/tmp");
+    bwrap.bind_readwrite("/run", "/run");
+
+    // zmienne środowiskowe
+    bwrap.setenv("DBUS_SESSION_BUS_ADDRESS", "disabled:");
+    bwrap.setenv("SYSTEMD_OFFLINE", "1");
+    bwrap.setenv("container", "systemd-nspawn");
+
+    Ok(bwrap)
+}
+
+// === Run install script sandboxed ===
+fn run_install_script_sandboxed(
+    script_content: &str,
+    dest: &str,
+    pkg_name: &str,
+    function_name: &str,
+) -> anyhow::Result<()> {
+    let script_path = format!("/tmp/.install-{}-{}.sh", pkg_name, function_name);
+    let full_script = format!(
+        "#!/bin/bash\nset -e\n\n{}\n\n{}\n",
+        script_content, function_name
+    );
+    std::fs::write(&script_path, &full_script)?;
+
+    let mut bwrap = build_bwrap_base(dest)?;
+    bwrap.bind_read(&script_path, "/run/script.sh");
+    bwrap.append_child_argv(["/bin/bash", "/run/script.sh"]);
+
+    let status = bwrap.run()?;
+
+    let _ = std::fs::remove_file(&script_path);
+
+    Ok(())
+}
+
+// === Run hook sandboxed ===
+fn run_hook_sandboxed(
+    hook: &PacmanHook,
+    dest: &str,
+    matched_targets: &[String],
+) -> anyhow::Result<()> {
+    let parts: Vec<&str> = hook.action.exec.split_whitespace().collect();
+    if parts.is_empty() {
+        anyhow::bail!("Empty hook exec: {}", hook.name);
+    }
+
+    let mut bwrap = build_bwrap_base(dest)?;
+    bwrap.append_child_argv(parts.iter().copied());
+
+    let result = if hook.action.needs_targets && !matched_targets.is_empty() {
+        let input = (matched_targets.join("\n") + "\n").into_bytes();
+        bwrap.run_with_stdin(&input)
+    } else {
+        bwrap.run()
+    };
+
+    // Nie failuj na błędach hooków — loguj ostrzeżenie
+    if let Err(e) = result {
+        eprintln!("  Warning hook {}, ended with error: {}", hook.name, e);
+    }
+
+    Ok(())
 }
