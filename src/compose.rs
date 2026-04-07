@@ -45,7 +45,7 @@ pub struct ComposeImageOpts
 
     /// OSTree repo
     #[clap(long)]
-    pub ostree_repo: Option<Utf8PathBuf>,
+    pub ostree_repo: Utf8PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,7 +132,7 @@ pub async fn compose_image(opts: ComposeImageOpts) -> anyhow::Result<()> {
      temp_dir.path().to_str().unwrap(), // &str
     )?;
 
-    let repo_path = opts.ostree_repo.as_ref().map(|p| p.as_str()).unwrap();
+    let repo_path = opts.ostree_repo.as_str();
     if !Path::new(repo_path).exists() {
         println!("Creating new OSTree repo at {}", repo_path);
         Repo::create_at(libc::AT_FDCWD, repo_path, RepoMode::BareUser, None, gio::Cancellable::NONE)?;
