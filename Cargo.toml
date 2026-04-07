@@ -28,3 +28,4 @@ nix = { version = "0.30.1", features = ["fs", "mount", "signal", "user"] }
 libc = "0.2.184"
 cap-std = "4.0.2"
 chrono = "0.4.44"
+cap-std-ext = "5.1.1"

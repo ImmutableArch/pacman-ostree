@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use clap::Parser;
-use ostree_ext::{glib::translate::Stash, ostree::{self, RepoCommitModifier, RepoCommitModifierFlags, RepoFile, RepoMode, SePolicy}};
+use ostree_ext::{container::Transport, glib::translate::Stash, ostree::{self, RepoCommitModifier, RepoCommitModifierFlags, RepoFile, RepoMode, SePolicy}};
 use ostree_ext::{gio, glib};
 use glib::prelude::*;
 use ostree::MutableTree;
@@ -27,6 +27,9 @@ use std::os::unix::fs as unix_fs;
 use anyhow::Context;
 use anyhow::{anyhow, Result};
 use crate::composepost;
+use crate::container::container_encapsulate;
+use crate::container::ContainerEncapsulateOpts;
+use ostree_ext::container::ImageReference;
 
 #[derive(Parser, Debug)]
 pub struct ComposeImageOpts
@@ -139,7 +142,30 @@ pub async fn compose_image(opts: ComposeImageOpts) -> anyhow::Result<()> {
     }
     let repo = Repo::open_at(libc::AT_FDCWD, repo_path, gio::Cancellable::NONE)?;
     let creation_time = chrono::Utc::now().with_timezone(&chrono::FixedOffset::east(0));
-    generate_commit_from_rootfs(&repo, &temp_dir_cap, Some(&creation_time))?;
+    let commit = generate_commit_from_rootfs(&repo, &temp_dir_cap, Some(&creation_time))?;
+    let imgrefrence = ImageReference {
+        transport: Transport::OciArchive,
+        name: opts.output.to_string(),
+    };
+    let container_opts = ContainerEncapsulateOpts {
+        repo: opts.ostree_repo.clone(),
+        ostree_ref: commit,
+        imgref: imgrefrence,
+        labels: vec![],
+        image_config: None,
+        arch: None,
+        copy_meta_keys: vec![],
+        copy_meta_opt_keys: vec![],
+        cmd: None,
+        max_layers: opts.max_layers,
+        format_version: 2,
+        write_contentmeta_json: None,
+        compare_with_build: None,
+        previous_build_manifest: None,
+    };
+
+    println!("Generating OCI archive: {}", opts.output);
+    let digest = container_encapsulate(container_opts).await?;
     Ok(())
 }
 

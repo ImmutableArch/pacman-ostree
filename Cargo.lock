@@ -2283,6 +2283,7 @@ dependencies = [
  "anyhow",
  "camino",
  "cap-std 4.0.2",
+ "cap-std-ext 5.1.1",
  "chrono",
  "clap",
  "console 0.16.3",

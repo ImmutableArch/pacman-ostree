@@ -4,6 +4,9 @@ mod compose;
 mod composepost;
 mod bubblewrap;
 mod initramfs;
+mod container;
+mod fsutil;
+
 
 use package_solver::{AlpmPool, AlpmPackage, AlpmDep, AlpmProvide};
 use package_manager::{AlpmRepository, PackageManager};
