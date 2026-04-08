@@ -281,6 +281,7 @@ fn run_hooks(
     for hook in hooks.iter().filter(|h| h.action.when == when) {
         let matched = hook_matches(hook, &installed_packages, installed_files);
         if !matched.is_empty() {
+            println!("Running hook {}...", hook.name);
             run_hook_sandboxed(hook, dest, &matched)?;
         }
     }
