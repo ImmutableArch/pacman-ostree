@@ -72,6 +72,9 @@ fn setup_base_dirs(root_fs: &Dir) -> Result<()> {
 
     root_fs.create_dir_all("run/media")?;
     root_fs.set_permissions("run/media", Permissions::from_std(StdPermissions::from_mode(0o755)))?;
+    
+    root_fs.create_dir_all("var/tmp")?;
+    root_fs.set_permissions("var/tmp", Permissions::from_std(StdPermissions::from_mode(0o1777)))?;
 
     Ok(())
 }
