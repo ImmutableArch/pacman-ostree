@@ -170,6 +170,10 @@ fn generate_initramfs(root_fs: &Dir, root_fs_path: &str) -> anyhow::Result<()> {
     }
 
     for kernel_dir in kernel_dirs {
+        let kernel_version = std::path::Path::new(&kernel_dir)
+            .file_name()
+            .unwrap()
+            .to_string_lossy();
         println!("Generating initramfs for kernel in {}", kernel_dir);
         run_dracut(root_fs_path, kernel_dir.as_str())?;
     }
