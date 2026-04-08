@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use crate::bubblewrap::{Bubblewrap, BubblewrapMutability};
+use std::os::unix::fs::FileTypeExt;
+use walkdir::WalkDir;
 
 use indicatif::ProgressStyle;
 use console::style;
@@ -220,10 +222,33 @@ pub async fn unpack_packages(install_result: &InstallResult, dest: &str) -> anyh
         write_package_to_database(package_info, dest).await.ok();
     }
 
+    cleanup_special_files(dest)?;
+
     Ok(())
 }
 
 // ───────────────── helpers ─────────────────
+
+fn cleanup_special_files(root: &str) -> anyhow::Result<()> {
+    for entry in WalkDir::new(root).follow_links(false) {
+        let entry = entry?;
+        let path = entry.path();
+
+        let metadata = fs::symlink_metadata(path)?;
+        let file_type = metadata.file_type();
+
+        if file_type.is_socket()
+            || file_type.is_fifo()
+            || file_type.is_block_device()
+            || file_type.is_char_device()
+        {
+            println!("Removing special file: {}", path.display());
+            fs::remove_file(path)?;
+        }
+    }
+
+    Ok(())
+}
 
 fn extract_install_script(pkg_file: &Path) -> anyhow::Result<Option<String>> {
     let output = Command::new("tar")

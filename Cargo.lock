@@ -2302,6 +2302,7 @@ dependencies = [
  "spinner",
  "tempfile",
  "tokio",
+ "walkdir",
 ]
 
 [[package]]
