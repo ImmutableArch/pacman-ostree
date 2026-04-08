@@ -156,7 +156,7 @@ fn enable_services(config: &ConfigYaml, root_fs_path: &str) -> anyhow::Result<()
     Ok(())
 }
 
-fn generate_initramfs(root_fs: &Dir) -> anyhow::Result<()> {
+fn generate_initramfs(root_fs: &Dir, root_fs_path: &str) -> anyhow::Result<()> {
     let kernel_dirs_opt = find_kernel_dir_fs(root_fs)
         .context("Failed to find kernel directory in root filesystem")?;
 
@@ -171,7 +171,7 @@ fn generate_initramfs(root_fs: &Dir) -> anyhow::Result<()> {
 
     for kernel_dir in kernel_dirs {
         println!("Generating initramfs for kernel in {}", kernel_dir);
-        run_dracut(root_fs, kernel_dir.as_str())?;
+        run_dracut(root_fs_path, kernel_dir.as_str())?;
     }
 
     Ok(())
@@ -188,6 +188,6 @@ pub fn compose_post(config: &ConfigYaml, root_fs: &Dir, root_fs_path: &str) -> a
     prepare_rootfs(root_fs)?; // tu możesz dalej używać Dir
     execute_post_scripts(config, root_fs_path)?; // teraz używamy &str
     enable_services(config, root_fs_path)?;
-    generate_initramfs(root_fs)?;
+    generate_initramfs(root_fs, root_fs_path)?;
     Ok(())
 }

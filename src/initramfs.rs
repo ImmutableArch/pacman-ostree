@@ -5,28 +5,49 @@ use anyhow::{Context, Result};
 use cap_std::fs::Dir;
 use camino::Utf8Path;
 use tempfile::tempdir;
+use crate::bubblewrap::Bubblewrap;
 
 
-pub fn run_dracut(root_fs: &Dir, kernel_dir: &str) -> Result<()> {
-    let tmp_dir = tempfile::tempdir()?;
-    let tmp_initramfs_path = tmp_dir.path().join("initramfs.img");
-    Command::new("dracut")
-        .args([
-            "--no-hostonly",
-            "--kver",
-            kernel_dir,
-            "--reproducible",
-            "-v",
-            "--add",
-            "ostree",
-            "-f",
-        ])
-        .arg(&tmp_initramfs_path)
-        .status()?;
-    let utf8_tmp_dir_path = Utf8Path::from_path(tmp_dir.path().strip_prefix("/")?)
-            .context("Error turning Path to Utf-8 Path")?;
-    
-    root_fs.rename(utf8_tmp_dir_path.join("initramfs.img"), &root_fs, (Utf8Path::new("lib/modules").join(kernel_dir)).join("initramfs.img"))?;
+pub fn run_dracut(root_fs_path: &str, kernel_version: &str) -> Result<()> {
+    let mut bwrap = build_bwrap_base(root_fs_path)?;
+
+    let output_path = format!("/lib/modules/{}/initramfs.img", kernel_version);
+
+    bwrap.append_child_argv([
+        "dracut",
+        "--no-hostonly",
+        "--kver",
+        kernel_version,
+        "--reproducible",
+        "-v",
+        "--add",
+        "ostree",
+        "-f",
+        &output_path,
+    ]);
+
+    bwrap.run()
+        .context("Failed to run dracut")?;
+
     Ok(())
+}
+
+fn build_bwrap_base(dest: &str) -> anyhow::Result<Bubblewrap> {
+    let mut bwrap = Bubblewrap::new(dest)?;
+    bwrap.prepend_rootfs_bind(dest, "/");
+
+    // dodatkowe bindy z oryginalnego Command
+    bwrap.bind_read("/sys", "/sys");
+
+    // dodatkowe katalogi tmp
+    bwrap.bind_readwrite("/tmp", "/tmp");
+    bwrap.bind_readwrite("/run", "/run");
+
+    // zmienne środowiskowe
+    bwrap.setenv("DBUS_SESSION_BUS_ADDRESS", "disabled:");
+    bwrap.setenv("SYSTEMD_OFFLINE", "1");
+    bwrap.setenv("container", "systemd-nspawn");
+
+    Ok(bwrap)
 }
 
