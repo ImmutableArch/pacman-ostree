@@ -5,29 +5,50 @@ use anyhow::{Context, Result};
 use cap_std::fs::Dir;
 use camino::Utf8Path;
 use tempfile::tempdir;
+use std::path::Path;
 use crate::bubblewrap::Bubblewrap;
 
 
 pub fn run_dracut(root_fs_path: &str, kernel_version: &str) -> Result<()> {
-    let mut bwrap = build_bwrap_base(root_fs_path)?;
+    // ścieżka docelowa initramfs
+    let output_path = Path::new(root_fs_path)
+        .join("lib/modules")
+        .join(kernel_version)
+        .join("initramfs.img");
 
-    let output_path = format!("/lib/modules/{}/initramfs.img", kernel_version);
+    // upewniamy się, że katalog istnieje
+    std::fs::create_dir_all(output_path.parent().unwrap())
+        .context("Failed to create directories for initramfs")?;
 
-    bwrap.append_child_argv([
-        "dracut",
-        "--no-hostonly",
-        "--kver",
-        kernel_version,
-        "--reproducible",
-        "-v",
-        "--add",
-        "ostree",
-        "-f",
-        &output_path,
-    ]);
+    // uruchamiamy depmod w sysroot
+    //let status_depmod = Command::new("depmod")
+        //.args(["-b", root_fs_path, kernel_version])
+        //.status()
+        //.context("Failed to run depmod")?;
 
-    bwrap.run()
+    //if !status_depmod.success() {
+        //anyhow::bail!("depmod failed");
+    //}
+
+    // uruchamiamy dracut z --sysroot
+    let status_dracut = Command::new("dracut")
+        .args([
+            "--no-hostonly",
+            "--kver", kernel_version,
+            "--reproducible",
+            "-v",
+            "--add", "ostree",
+            "-f",
+            output_path.to_str().unwrap(),
+            "--sysroot",
+            root_fs_path,
+        ])
+        .status()
         .context("Failed to run dracut")?;
+
+    if !status_dracut.success() {
+        anyhow::bail!("dracut failed");
+    }
 
     Ok(())
 }
