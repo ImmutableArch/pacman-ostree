@@ -324,6 +324,7 @@ pub async fn write_package_to_database(
     pkg_info: &PackageInfo,
     dest: &str,
 ) -> anyhow::Result<()> {
+    println!("Writing Pacman Databse...");
     let pkg = &pkg_info.package;
     let entry_name = format!("{}-{}-{}", pkg.name, pkg.version, pkg.pkgrel);
 
