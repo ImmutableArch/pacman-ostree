@@ -43,14 +43,14 @@ fn setup_base_dirs(root_fs: &Dir) -> Result<()> {
 
     // 3. Utwórz symlinki
     let symlinks = [
-        ("sysroot/ostree", "/ostree"),
-        ("var/roothome", "/root"),
-        ("var/srv", "/srv"),
-        ("var/opt", "/opt"),
-        ("var/mnt", "/mnt"),
-        ("var/home", "/home"),
-        ("../var/usrlocal", "/usr/local"),
-        ("usr/share/pacman", "/var/lib/pacman"),
+        ("sysroot/ostree", "ostree"),
+        ("var/roothome", "root"),
+        ("var/srv", "srv"),
+        ("var/opt", "opt"),
+        ("var/mnt", "mnt"),
+        ("var/home", "home"),
+        ("../var/usrlocal", "usr/local"),
+        ("usr/share/pacman", "var/lib/pacman"),
     ];
     for (src, dst) in symlinks {
         let _ = root_fs.remove_file(dst); // usuń istniejący link jeśli jest
