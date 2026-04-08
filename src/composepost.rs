@@ -53,11 +53,11 @@ fn setup_base_dirs(root_fs: &Dir) -> Result<()> {
         ("usr/share/pacman", "var/lib/pacman"),
     ];
     for (src, dst) in symlinks {
-        let _ = root_fs.remove_file(dst); // usuń istniejący link jeśli jest
-        root_fs.symlink(src, dst)
-            .with_context(|| format!("Creating symlink {} -> {}", dst, src))?;
+        ensure_parent_exists(root_fs, dst)?;
+        let _ = root_fs.remove_file(dst);
+        let _ = root_fs.remove_dir_all(dst);
+        root_fs.symlink(src, dst)?;
     }
-
     // 4. Utwórz struktury w /var z odpowiednimi uprawnieniami
     let var_dirs_0755 = ["opt", "home", "srv", "mnt", "usrlocal"];
     for d in &var_dirs_0755 {
@@ -73,6 +73,13 @@ fn setup_base_dirs(root_fs: &Dir) -> Result<()> {
     root_fs.create_dir_all("run/media")?;
     root_fs.set_permissions("run/media", Permissions::from_std(StdPermissions::from_mode(0o755)))?;
 
+    Ok(())
+}
+
+fn ensure_parent_exists(root_fs: &Dir, path: &str) -> Result<()> {
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        root_fs.create_dir_all(parent)?;
+    }
     Ok(())
 }
 
