@@ -175,7 +175,7 @@ fn generate_initramfs(root_fs: &Dir, root_fs_path: &str) -> anyhow::Result<()> {
             .unwrap()
             .to_string_lossy();
         println!("Generating initramfs for kernel in {}", kernel_dir);
-        run_dracut(root_fs_path, kernel_dir.as_str())?;
+        run_dracut(root_fs_path, &kernel_version)?;
     }
 
     Ok(())
