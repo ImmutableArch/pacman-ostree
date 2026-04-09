@@ -142,6 +142,7 @@ pub async fn compose_image(opts: ComposeImageOpts) -> anyhow::Result<()> {
     }
     let repo = Repo::open_at(libc::AT_FDCWD, repo_path, gio::Cancellable::NONE)?;
     let creation_time = chrono::Utc::now().with_timezone(&chrono::FixedOffset::east(0));
+    println!("Generating OSTree commit from rootfs...");
     let commit = generate_commit_from_rootfs(&repo, &temp_dir_cap, Some(&creation_time))?;
     let output = if opts.output.is_absolute() {
         opts.output.clone()
@@ -153,14 +154,15 @@ pub async fn compose_image(opts: ComposeImageOpts) -> anyhow::Result<()> {
         fs::create_dir_all(parent)?;
     }
 
-    let imgrefrence = ImageReference {
-        transport: Transport::OciArchive,
-        name: output.to_string(),
-    };
+    let _repo = ostree_ext::cli::parse_repo(&opts.ostree_repo)
+        .context("Parsing repo")?;
+
+    let imgrefrence = ostree_ext::cli::parse_imgref(&output.as_str())
+        .context("Parsing image reference")?;
     let container_opts = ContainerEncapsulateOpts {
         repo: opts.ostree_repo.clone(),
         ostree_ref: commit,
-        imgref: imgrefrence,
+        imgref: imgrefrence.imgref,
         labels: vec![],
         image_config: None,
         arch: None,
