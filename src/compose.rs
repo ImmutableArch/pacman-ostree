@@ -295,6 +295,8 @@ fn generate_commit_from_rootfs(repo: &Repo, rootfs: &Dir, creation_time: Option<
         cancellable
     )?;
 
+    println!("Generated commit: {}", commit);
+
     tx.commit(cancellable)?;
     Ok(commit.into())
 }
