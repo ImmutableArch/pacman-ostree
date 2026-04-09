@@ -143,9 +143,19 @@ pub async fn compose_image(opts: ComposeImageOpts) -> anyhow::Result<()> {
     let repo = Repo::open_at(libc::AT_FDCWD, repo_path, gio::Cancellable::NONE)?;
     let creation_time = chrono::Utc::now().with_timezone(&chrono::FixedOffset::east(0));
     let commit = generate_commit_from_rootfs(&repo, &temp_dir_cap, Some(&creation_time))?;
+    let output = if opts.output.is_absolute() {
+        opts.output.clone()
+    } else {
+        std::env::current_dir()?.join(&opts.output).try_into()?
+    };
+
+    if let Some(parent) = Path::new(output.as_str()).parent() {
+        fs::create_dir_all(parent)?;
+    }
+
     let imgrefrence = ImageReference {
         transport: Transport::OciArchive,
-        name: opts.output.to_string(),
+        name: output.to_string(),
     };
     let container_opts = ContainerEncapsulateOpts {
         repo: opts.ostree_repo.clone(),
@@ -163,6 +173,10 @@ pub async fn compose_image(opts: ComposeImageOpts) -> anyhow::Result<()> {
         compare_with_build: None,
         previous_build_manifest: None,
     };
+
+    println!("cwd = {:?}", std::env::current_dir()?);
+    println!("output = {}", opts.output);
+    println!("repo = {}", opts.ostree_repo);
 
     println!("Generating OCI archive: {}", opts.output);
     let digest = container_encapsulate(container_opts).await?;
