@@ -148,12 +148,14 @@ pub async fn compose_image(opts: ComposeImageOpts) -> anyhow::Result<()> {
     let _repo = ostree_ext::cli::parse_repo(&opts.ostree_repo)
         .context("Parsing repo")?;
 
-    let imgrefrence = ostree_ext::cli::parse_imgref(&opts.output.as_str())
-        .context("Parsing image reference")?;
+    let imgreference = ImageReference {
+        transport: Transport::OciArchive,
+        name: opts.output.to_string(),
+    };
     let container_opts = ContainerEncapsulateOpts {
         repo: opts.ostree_repo.clone(),
         ostree_ref: commit,
-        imgref: imgrefrence.imgref,
+        imgref: imgreference,
         labels: vec![],
         image_config: None,
         arch: None,
