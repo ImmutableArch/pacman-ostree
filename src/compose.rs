@@ -144,20 +144,11 @@ pub async fn compose_image(opts: ComposeImageOpts) -> anyhow::Result<()> {
     let creation_time = chrono::Utc::now().with_timezone(&chrono::FixedOffset::east(0));
     println!("Generating OSTree commit from rootfs...");
     let commit = generate_commit_from_rootfs(&repo, &temp_dir_cap, Some(&creation_time))?;
-    let output = if opts.output.is_absolute() {
-        opts.output.clone()
-    } else {
-        std::env::current_dir()?.join(&opts.output).try_into()?
-    };
-
-    if let Some(parent) = Path::new(output.as_str()).parent() {
-        fs::create_dir_all(parent)?;
-    }
 
     let _repo = ostree_ext::cli::parse_repo(&opts.ostree_repo)
         .context("Parsing repo")?;
 
-    let imgrefrence = ostree_ext::cli::parse_imgref(&output.as_str())
+    let imgrefrence = ostree_ext::cli::parse_imgref(&opts.output.as_str())
         .context("Parsing image reference")?;
     let container_opts = ContainerEncapsulateOpts {
         repo: opts.ostree_repo.clone(),
