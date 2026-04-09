@@ -154,7 +154,7 @@ pub async fn compose_image(opts: ComposeImageOpts) -> anyhow::Result<()> {
     };
     let pacman_db_path = Utf8PathBuf::from_path_buf(temp_dir.path().to_path_buf())
     .map_err(|pb| anyhow!("Invalid UTF-8 path: {:?}", pb))?
-    .join("var/lib/pacman/local");
+    .join("usr/share/pacman/local");
     let container_opts = ContainerEncapsulateOpts {
         repo: opts.ostree_repo.clone(),
         ostree_ref: commit,

@@ -12,7 +12,7 @@ use ostree_ext::oci_spec;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use camino::{Utf8Path, Utf8PathBuf};
 use std::rc::Rc;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::ffi::CStr;
 use clap::Parser;
 use std::str::FromStr;
@@ -219,6 +219,12 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
 
     // Wczytaj paczki z bazy
     let db_path = opt.pacman_db_path;
+    println!("pacman db path = {}", db_path);
+    println!("pacman db exists = {}", db_path.exists());
+
+    if !db_path.exists() {
+        return Err(anyhow!("Pacman DB path missing: {}", db_path));
+    }
     let mut package_meta: HashMap<Rc<str>, (DbDescFileV1, Utf8PathBuf)> = HashMap::new();
 
     for entry in std::fs::read_dir(&db_path)? {
