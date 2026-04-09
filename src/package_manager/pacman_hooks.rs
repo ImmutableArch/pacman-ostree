@@ -80,9 +80,13 @@ pub fn parse_hook_file(path: &Path) -> anyhow::Result<PacmanHook> {
             continue;
         }
 
-        let (key, value) = line.split_once('=')
-            .map(|(k, v)| (k.trim(), v.trim()))
-            .ok_or_else(|| anyhow::anyhow!("Invalid hook line: {}", line))?;
+        // Linie mogą być w formacie "Key = Value" lub samego "Key" (flaga bez wartości,
+        // np. NeedsTargets). Rozdzielamy po pierwszym '=' jeśli istnieje.
+        let (key, value) = if let Some((k, v)) = line.split_once('=') {
+            (k.trim(), v.trim())
+        } else {
+            (line, "")
+        };
 
         match (section.as_str(), key) {
             ("Trigger", "Type") => {
@@ -115,7 +119,10 @@ pub fn parse_hook_file(path: &Path) -> anyhow::Result<PacmanHook> {
             ("Action", "Exec") => exec = Some(value.to_string()),
             ("Action", "Depends") => depends.push(value.to_string()),
             ("Action", "Description") => description = Some(value.to_string()),
-            ("Action", "NeedsTargets") => needs_targets = value.eq_ignore_ascii_case("true"),
+            // NeedsTargets może wystąpić jako flaga bez wartości lub z wartością "true"/"false".
+            ("Action", "NeedsTargets") => {
+                needs_targets = value.is_empty() || value.eq_ignore_ascii_case("true");
+            }
             _ => {}
         }
     }
@@ -172,8 +179,9 @@ pub fn load_hooks(dest: &str) -> anyhow::Result<Vec<PacmanHook>> {
                 continue;
             }
 
-            if let Ok(hook) = parse_hook_file(&path) {
-                hooks.push(hook);
+            match parse_hook_file(&path) {
+                Ok(hook) => hooks.push(hook),
+                Err(e) => eprintln!("Warning: failed to parse hook {}: {}", filename, e),
             }
         }
     }
