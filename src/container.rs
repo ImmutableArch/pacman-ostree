@@ -59,6 +59,8 @@ pub struct ContainerEncapsulateOpts {
     pub compare_with_build: Option<String>,
     #[clap(long)]
     pub previous_build_manifest: Option<Utf8PathBuf>,
+    #[clap(long)]
+    pub pacman_db_path: Utf8PathBuf,
 }
 
 #[derive(Debug)]
@@ -216,7 +218,7 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
     });
 
     // Wczytaj paczki z bazy
-    let db_path = Utf8PathBuf::from("/usr/share/pacman/local");
+    let db_path = opt.pacman_db_path;
     let mut package_meta: HashMap<Rc<str>, (DbDescFileV1, Utf8PathBuf)> = HashMap::new();
 
     for entry in std::fs::read_dir(&db_path)? {

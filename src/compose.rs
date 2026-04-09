@@ -152,6 +152,9 @@ pub async fn compose_image(opts: ComposeImageOpts) -> anyhow::Result<()> {
         transport: Transport::OciArchive,
         name: opts.output.to_string(),
     };
+    let pacman_db_path = Utf8PathBuf::from_path_buf(temp_dir.path().to_path_buf())
+    .map_err(|pb| anyhow!("Invalid UTF-8 path: {:?}", pb))?
+    .join("var/lib/pacman/local");
     let container_opts = ContainerEncapsulateOpts {
         repo: opts.ostree_repo.clone(),
         ostree_ref: commit,
@@ -167,6 +170,7 @@ pub async fn compose_image(opts: ComposeImageOpts) -> anyhow::Result<()> {
         write_contentmeta_json: None,
         compare_with_build: None,
         previous_build_manifest: None,
+        pacman_db_path: pacman_db_path,
     };
 
     println!("cwd = {:?}", std::env::current_dir()?);
