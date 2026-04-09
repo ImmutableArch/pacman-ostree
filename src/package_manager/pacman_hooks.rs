@@ -182,34 +182,89 @@ pub fn load_hooks(dest: &str) -> anyhow::Result<Vec<PacmanHook>> {
     Ok(hooks)
 }
 
+/// Rozdziela listę targetów na wzorce pozytywne i negatywne (z prefiksem `!`).
+/// Zwraca (positive_patterns, negative_patterns) – oba bez prefiksu `!`.
+fn split_targets(targets: &[String]) -> (Vec<&str>, Vec<&str>) {
+    let mut positive = Vec::new();
+    let mut negative = Vec::new();
+
+    for t in targets {
+        if let Some(negated) = t.strip_prefix('!') {
+            negative.push(negated);
+        } else {
+            positive.push(t.as_str());
+        }
+    }
+
+    (positive, negative)
+}
+
+/// Sprawdza, czy dany element pasuje do zestawu wzorców.
+///
+/// Reguły zgodne z pacmanem:
+/// 1. Element musi pasować do co najmniej jednego wzorca pozytywnego.
+/// 2. Element nie może pasować do żadnego wzorca negatywnego (z prefiksem `!`).
+///
+/// Jeśli nie ma żadnych wzorców pozytywnych, element jest odrzucany.
+fn matches_targets(targets: &[String], value: &str) -> bool {
+    let (positive, negative) = split_targets(targets);
+
+    if positive.is_empty() {
+        return false;
+    }
+
+    let matched_positive = positive.iter().any(|pat| glob_match(pat, value));
+    if !matched_positive {
+        return false;
+    }
+
+    let excluded = negative.iter().any(|pat| glob_match(pat, value));
+    !excluded
+}
+
 pub fn hook_matches(
     hook: &PacmanHook,
+    active_operations: &[HookOperation],
     installed_packages: &[String],
     installed_files: &[String],
 ) -> Vec<String> {
-    if !hook.trigger.operations.contains(&HookOperation::Install) {
+    // Hook musi mieć przynajmniej jedną operację wspólną z aktualnie wykonywanymi.
+    let operation_matches = hook.trigger.operations.iter()
+        .any(|op| active_operations.contains(op));
+
+    if !operation_matches {
         return vec![];
     }
 
     let mut matched = Vec::new();
 
-    for target_pattern in &hook.trigger.targets {
-        match hook.trigger.trigger_type {
-            HookTriggerType::Package => {
-                for pkg in installed_packages {
-                    if glob_match(target_pattern, pkg) {
-                        matched.push(pkg.clone());
-                    }
+    match hook.trigger.trigger_type {
+        HookTriggerType::Package => {
+            for pkg in installed_packages {
+                if matches_targets(&hook.trigger.targets, pkg) {
+                    matched.push(pkg.clone());
                 }
             }
-            HookTriggerType::File | HookTriggerType::Path => {
-                for file in installed_files {
-                    let file_rel = file.trim_start_matches('/');
-                    let pattern_rel = target_pattern.trim_start_matches('/');
+        }
+        HookTriggerType::File | HookTriggerType::Path => {
+            for file in installed_files {
+                let file_rel = file.trim_start_matches('/');
 
-                    if glob_match(pattern_rel, file_rel) {
-                        matched.push(file.clone());
-                    }
+                // Wzorce w hooku mogą, ale nie muszą, zaczynać się od `/`.
+                // Normalizujemy oba do postaci bez wiodącego ukośnika.
+                let normalized_targets: Vec<String> = hook.trigger.targets
+                    .iter()
+                    .map(|t| {
+                        if let Some(negated) = t.strip_prefix('!') {
+                            format!("!{}", negated.trim_start_matches('/'))
+                        } else {
+                            t.trim_start_matches('/').to_string()
+                        }
+                    })
+                    .collect();
+
+                if matches_targets(&normalized_targets, file_rel) {
+                    matched.push(file.clone());
                 }
             }
         }

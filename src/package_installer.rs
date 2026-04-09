@@ -1,7 +1,7 @@
 // Obsługa instalacji pakietów i odinstalowania
 
 use crate::package_manager::{AlpmRepository, InstallResult, PackageManager, PackageInfo, PacmanHook, InstallReason};
-use crate::package_manager::pacman_hooks::{HookWhen, hook_matches, load_hooks};
+use crate::package_manager::pacman_hooks::{HookWhen, HookOperation, hook_matches, load_hooks};
 use crate::{AlpmPool, AlpmPackage};
 
 use anyhow::Context;
@@ -122,6 +122,9 @@ async fn download_packages(
 pub async fn unpack_packages(install_result: &InstallResult, dest: &str) -> anyhow::Result<()> {
     let cache_dir = format!("{}/var/cache/pacman/pkg", dest);
 
+    // Przy zwykłej instalacji wszystkie pakiety traktujemy jako Install.
+    let active_operations = vec![HookOperation::Install];
+
     for package_info in &install_result.packages {
         let pkg_name = &package_info.package.name;
 
@@ -201,7 +204,7 @@ pub async fn unpack_packages(install_result: &InstallResult, dest: &str) -> anyh
     }
 
     println!("Running PreTransaction hooks...");
-    run_hooks(&hooks, HookWhen::PreTransaction, install_result, dest, &installed_files)?;
+    run_hooks(&hooks, HookWhen::PreTransaction, &active_operations, install_result, dest, &installed_files)?;
 
     for scripts in &all_scripts {
         if scripts.has_post {
@@ -216,8 +219,9 @@ pub async fn unpack_packages(install_result: &InstallResult, dest: &str) -> anyh
     }
 
     println!("Running PostTransaction hooks...");
-    run_hooks(&hooks, HookWhen::PostTransaction, install_result, dest, &installed_files)?;
+    run_hooks(&hooks, HookWhen::PostTransaction, &active_operations, install_result, dest, &installed_files)?;
 
+    println!("Writing Pacman Database...");
     for package_info in &install_result.packages {
         write_package_to_database(package_info, dest).await.ok();
     }
@@ -269,6 +273,7 @@ fn extract_install_script(pkg_file: &Path) -> anyhow::Result<Option<String>> {
 fn run_hooks(
     hooks: &[PacmanHook],
     when: HookWhen,
+    active_operations: &[HookOperation],
     install_result: &InstallResult,
     dest: &str,
     installed_files: &[String],
@@ -279,7 +284,7 @@ fn run_hooks(
         .collect();
 
     for hook in hooks.iter().filter(|h| h.action.when == when) {
-        let matched = hook_matches(hook, &installed_packages, installed_files);
+        let matched = hook_matches(hook, active_operations, &installed_packages, installed_files);
         if !matched.is_empty() {
             println!("Running hook {}...", hook.name);
             run_hook_sandboxed(hook, dest, &matched)?;
@@ -325,7 +330,6 @@ pub async fn write_package_to_database(
     pkg_info: &PackageInfo,
     dest: &str,
 ) -> anyhow::Result<()> {
-    println!("Writing Pacman Databse...");
     let pkg = &pkg_info.package;
     let entry_name = format!("{}-{}-{}", pkg.name, pkg.version, pkg.pkgrel);
 
@@ -417,14 +421,10 @@ fn build_bwrap_base(dest: &str) -> anyhow::Result<Bubblewrap> {
     let mut bwrap = Bubblewrap::new(dest)?;
     bwrap.prepend_rootfs_bind(dest, "/");
 
-    // dodatkowe bindy z oryginalnego Command
     bwrap.bind_read("/sys", "/sys");
-
-    // dodatkowe katalogi tmp
     bwrap.bind_readwrite("/tmp", "/tmp");
     bwrap.bind_readwrite("/run", "/run");
 
-    // zmienne środowiskowe
     bwrap.setenv("DBUS_SESSION_BUS_ADDRESS", "disabled:");
     bwrap.setenv("SYSTEMD_OFFLINE", "1");
     bwrap.setenv("container", "systemd-nspawn");
@@ -480,7 +480,7 @@ fn run_hook_sandboxed(
 
     // Nie failuj na błędach hooków — loguj ostrzeżenie
     if let Err(e) = result {
-        eprintln!("  Warning hook {}, ended with error: {}", hook.name, e);
+        eprintln!("Warning: hook {} ended with error: {}", hook.name, e);
     }
 
     Ok(())
