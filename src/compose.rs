@@ -30,6 +30,8 @@ use crate::composepost;
 use crate::container::container_encapsulate;
 use crate::container::ContainerEncapsulateOpts;
 use ostree_ext::container::ImageReference;
+use cap_std::fs::MetadataExt;
+use cap_std::io_lifetimes::AsFd;
 
 #[derive(Parser, Debug)]
 pub struct ComposeImageOpts
@@ -267,6 +269,27 @@ fn postprocess_mtree(repo: &ostree::Repo, rootfs: &ostree::MutableTree) -> anyho
     Ok(())
 }
 
+fn label_to_xattrs(label: Option<&str>) -> Option<glib::Variant> {
+    let xattrs = label.map(|label| {
+        let mut label: Vec<_> = label.to_owned().into();
+        label.push(0);
+        vec![(c"security.selinux".to_bytes_with_nul(), label)]
+    });
+    xattrs.map(|x| x.to_variant())
+}
+
+fn create_root_dirmeta(root: &Dir, policy: &ostree::SePolicy) -> Result<glib::Variant> {
+    let finfo = gio::FileInfo::new();
+    let meta = root.dir_metadata()?;
+    finfo.set_attribute_uint32("unix::uid", 0);
+    finfo.set_attribute_uint32("unix::gid", 0);
+    finfo.set_attribute_uint32("unix::mode", libc::S_IFDIR | meta.mode());
+    let label = policy.label("/", 0o777 | libc::S_IFDIR, gio::Cancellable::NONE)?;
+    let xattrs = label_to_xattrs(label.as_deref());
+    let r = ostree::create_directory_metadata(&finfo, xattrs.as_ref());
+    Ok(r)
+}
+
 fn generate_commit_from_rootfs(repo: &Repo, rootfs: &Dir, creation_time: Option<&chrono::DateTime<chrono::FixedOffset>>) -> anyhow::Result<String> {
     let root_mtree = MutableTree::new();
     let cancellable = gio::Cancellable::NONE;
@@ -276,6 +299,22 @@ fn generate_commit_from_rootfs(repo: &Repo, rootfs: &Dir, creation_time: Option<
         RepoCommitModifierFlags::CANONICAL_PERMISSIONS,
         None
     );
+
+    let policy = ostree::SePolicy::new_at(rootfs.as_fd().as_raw_fd(), cancellable)?;
+    modifier.set_sepolicy(Some(&policy));
+
+    let root_dirmeta = create_root_dirmeta(rootfs, &policy)?;
+    let root_metachecksum = repo.write_metadata(
+        ostree::ObjectType::DirMeta, 
+        None, 
+        &root_dirmeta, 
+        cancellable
+    )
+    .context("Writing root directory metadata")?;
+
+    root_mtree.set_metadata_checksum(&root_metachecksum.to_hex());
+
+    
 
     repo.write_dfd_to_mtree(
         rootfs.as_raw_fd(),
