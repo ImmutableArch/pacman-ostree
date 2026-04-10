@@ -33,6 +33,9 @@ struct PkgInfo {
     pkgdesc: Option<String>,
     arch: Option<String>,
     size: Option<u64>,
+    url: Option<String>,
+    builddate: Option<u64>,
+    packager: Option<String>,
 }
 
 const DEFAULT_PACMAN_CONF_PATH: &str = "/etc/pacman.conf";
@@ -361,22 +364,36 @@ pub async fn write_package_to_database(
     let desc = pkginfo.pkgdesc.as_deref().unwrap_or("");
     let arch = pkginfo.arch.as_deref().unwrap_or("x86_64");
     let size = pkginfo.size.unwrap_or(0);
+    let url = pkginfo.url.as_deref().unwrap_or("");
+    let builddate = pkginfo.builddate.unwrap_or(0);
+    let installdate = chrono::Utc::now().timestamp();
+    let packager = pkginfo.packager.as_deref().unwrap_or("unknown");
 
     fs::write(
-        format!("{}/desc", db_dir),
-        format!(
+    format!("{}/desc", db_dir),
+format!(
             "%NAME%\n{}\n\n\
-             %BASE%\n{}\n\n\
-             %VERSION%\n{}\n\n\
-             %DESC%\n{}\n\n\
-             %ARCH%\n{}\n\n\
-             %SIZE%\n{}\n\n",
+            %BASE%\n{}\n\n\
+            %VERSION%\n{}\n\n\
+            %DESC%\n{}\n\n\
+            %URL%\n{}\n\n\
+            %ARCH%\n{}\n\n\
+            %BUILDDATE%\n{}\n\n\
+            %INSTALLDATE%\n{}\n\n\
+            %PACKAGER%\n{}\n\n\
+            %SIZE%\n{}\n\n\
+            %VALIDATION%\n{}\n\n",
             pkginfo.pkgname,
             base,
             pkginfo.pkgver,
             desc,
+            url,
             arch,
-            size
+            builddate,
+            installdate,
+            packager,
+            size,
+            "sha256" // albo sha256 jeśli chcesz
         )
     )?;
 
@@ -399,9 +416,10 @@ fn parse_pkginfo(content: &str) -> anyhow::Result<PkgInfo> {
                 "pkgver"  => info.pkgver = value.to_string(),
                 "pkgdesc" => info.pkgdesc = Some(value.to_string()),
                 "arch"    => info.arch = Some(value.to_string()),
-                "size"    => {
-                    info.size = value.parse().ok();
-                }
+                "size"    => info.size = value.parse().ok(),
+                "url"     => info.url = Some(value.to_string()),
+                "builddate" => info.builddate = value.parse().ok(),
+                "packager" => info.packager = Some(value.to_string()),
                 _ => {}
             }
         }
