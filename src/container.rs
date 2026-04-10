@@ -180,7 +180,6 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
 
     // ───────── PACMAN DB ─────────
     let db_path = opt.pacman_db_path;
-    println!("pacman db path = {}", db_path);
 
     if !db_path.exists() {
         return Err(anyhow!("Pacman DB path missing: {}", db_path));

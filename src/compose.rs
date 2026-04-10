@@ -175,11 +175,6 @@ pub async fn compose_image(opts: ComposeImageOpts) -> anyhow::Result<()> {
         pacman_db_path: pacman_db_path,
     };
 
-    println!("cwd = {:?}", std::env::current_dir()?);
-    println!("output = {}", opts.output);
-    println!("repo = {}", opts.ostree_repo);
-
-    println!("Generating OCI archive: {}", opts.output);
     let digest = container_encapsulate(container_opts).await?;
     Ok(())
 }
