@@ -25,6 +25,16 @@ struct PackageScripts {
     has_post:       bool,
 }
 
+#[derive(Debug, Default)]
+struct PkgInfo {
+    pkgname: String,
+    pkgbase: Option<String>,
+    pkgver: String,
+    pkgdesc: Option<String>,
+    arch: Option<String>,
+    size: Option<u64>,
+}
+
 const DEFAULT_PACMAN_CONF_PATH: &str = "/etc/pacman.conf";
 
 pub async fn install_packages(package_names: Vec<&str>, dest: &str, pacman_conf: Option<&str>) -> anyhow::Result<()> {
@@ -331,23 +341,94 @@ pub async fn write_package_to_database(
     dest: &str,
 ) -> anyhow::Result<()> {
     let pkg = &pkg_info.package;
-    let entry_name = format!("{}-{}-{}", pkg.name, pkg.version, pkg.pkgrel);
 
+    let cache_dir = format!("{}/var/cache/pacman/pkg", dest);
+    let pattern  = format!("{}/{}-*.pkg.tar.zst", cache_dir, pkg.name);
+
+    let pkg_file = glob::glob(&pattern)?
+        .filter_map(Result::ok)
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Package file not found"))?;
+
+    let pkginfo = extract_pkginfo(&pkg_file)?;
+
+    let entry_name = format!("{}-{}", pkginfo.pkgname, pkginfo.pkgver);
     let db_dir = format!("{}/usr/share/pacman/local/{}", dest, entry_name);
-    std::fs::create_dir_all(&db_dir)?;
 
-    std::fs::write(
+    fs::create_dir_all(&db_dir)?;
+
+    let base = pkginfo.pkgbase.as_deref().unwrap_or(&pkginfo.pkgname);
+    let desc = pkginfo.pkgdesc.as_deref().unwrap_or("");
+    let arch = pkginfo.arch.as_deref().unwrap_or("x86_64");
+    let size = pkginfo.size.unwrap_or(0);
+
+    fs::write(
         format!("{}/desc", db_dir),
-        format!("%NAME%\n{}\n\n%VERSION%\n{}-{}\n\n",
-            pkg.name, pkg.version, pkg.pkgrel)
+        format!(
+            "%NAME%\n{}\n\n\
+             %BASE%\n{}\n\n\
+             %VERSION%\n{}\n\n\
+             %DESC%\n{}\n\n\
+             %ARCH%\n{}\n\n\
+             %SIZE%\n{}\n\n",
+            pkginfo.pkgname,
+            base,
+            pkginfo.pkgver,
+            desc,
+            arch,
+            size
+        )
     )?;
 
-    std::fs::write(
+    fs::write(
         format!("{}/files", db_dir),
         "%FILES%\n\n"
     )?;
 
     Ok(())
+}
+
+fn parse_pkginfo(content: &str) -> anyhow::Result<PkgInfo> {
+    let mut info = PkgInfo::default();
+
+    for line in content.lines() {
+        if let Some((key, value)) = line.split_once(" = ") {
+            match key {
+                "pkgname" => info.pkgname = value.to_string(),
+                "pkgbase" => info.pkgbase = Some(value.to_string()),
+                "pkgver"  => info.pkgver = value.to_string(),
+                "pkgdesc" => info.pkgdesc = Some(value.to_string()),
+                "arch"    => info.arch = Some(value.to_string()),
+                "size"    => {
+                    info.size = value.parse().ok();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if info.pkgname.is_empty() || info.pkgver.is_empty() {
+        anyhow::bail!("Invalid PKGINFO: missing required fields");
+    }
+
+    Ok(info)
+}
+
+fn extract_pkginfo(pkg_file: &Path) -> anyhow::Result<PkgInfo> {
+    let output = Command::new("tar")
+        .arg("--extract")
+        .arg("--zstd")
+        .arg("--to-stdout")
+        .arg("--file").arg(pkg_file)
+        .arg(".PKGINFO")
+        .output()?;
+
+    if !output.status.success() {
+        anyhow::bail!("Failed to extract .PKGINFO");
+    }
+
+    let content = String::from_utf8(output.stdout)?;
+    parse_pkginfo(&content)
 }
 
 pub fn load_local_db_from_files(dest: &str) -> anyhow::Result<Vec<AlpmPackage>> {
