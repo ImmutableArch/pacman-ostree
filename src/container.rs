@@ -65,19 +65,22 @@ pub struct ContainerEncapsulateOpts {
 
 #[derive(Debug)]
 struct MappingBuilder {
+    /// Metadane każdego pakietu/komponentu — to jest `ObjectMeta.set`.
+    /// Każdy ContentID obecny w `map` musi mieć tutaj wpis.
     packagemeta: ObjectMetaSet,
     componentmeta: ObjectMetaSet,
     component_ids: HashSet<String>,
     checksum_paths: BTreeMap<String, BTreeSet<Utf8PathBuf>>,
+    /// checksum -> ContentID pakietu (do wypełnienia ObjectMeta.map)
     path_packages: HashMap<Utf8PathBuf, BTreeSet<ContentID>>,
     path_components: HashMap<Utf8PathBuf, BTreeSet<ContentID>>,
     unpackaged_id: ContentID,
     skip: HashSet<Utf8PathBuf>,
-    pacmanSize: u64,
+    pacman_size: u64,
 }
 
 impl MappingBuilder {
-    const UNPACKAGED_ID: &'static str = "rpmostree-unpackaged-content";
+    const UNPACKAGED_ID: &'static str = "pacmanostree-unpackaged-content";
 
     fn duplicate_objects(&self) -> impl Iterator<Item = (&String, &BTreeSet<Utf8PathBuf>)> {
         self.checksum_paths.iter().filter(|(_, paths)| paths.len() > 1)
@@ -117,56 +120,6 @@ impl MappingBuilder {
 
         (package_meta, component_content_map)
     }
-}
-
-fn build_fs_mapping_recurse(
-    path: &mut Utf8PathBuf,
-    dir: &gio::File,
-    state: &mut MappingBuilder,
-    parent_component: Option<String>,
-) -> Result<()> {
-    let e = dir.enumerate_children(
-        "standard::name,standard::type",
-        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
-        gio::Cancellable::NONE,
-    )?;
-    for child in e {
-        let childi = child?;
-        let name: Utf8PathBuf = childi.name().try_into()?;
-        let child = dir.child(&name);
-        path.push(&name);
-        match childi.file_type() {
-            gio::FileType::Regular | gio::FileType::SymbolicLink => {
-                let child = child.downcast::<ostree::RepoFile>().unwrap();
-
-                if state.skip.remove(Utf8Path::new(path)) {
-                    path.pop();
-                    continue;
-                }
-
-                let file_component = get_user_component_xattr(&child)?;
-                let effective_component = file_component.or_else(|| parent_component.clone());
-
-                if let Some(component_name) = effective_component {
-                    let component_id = Rc::from(component_name.clone());
-                    state.component_ids.insert(component_name);
-                    state.path_components.entry(path.clone()).or_default().insert(Rc::clone(&component_id));
-                };
-
-                let checksum = child.checksum().to_string();
-                state.checksum_paths.entry(checksum).or_default().insert(path.clone());
-            }
-            gio::FileType::Directory => {
-                let child_repo_file = child.clone().downcast::<ostree::RepoFile>().unwrap();
-                let dir_component = get_user_component_xattr(&child_repo_file)?;
-                let effective_component = dir_component.or_else(|| parent_component.clone());
-                build_fs_mapping_recurse(path, &child, state, effective_component)?;
-            }
-            o => anyhow::bail!("Unhandled file type: {o:?}"),
-        }
-        path.pop();
-    }
-    Ok(())
 }
 
 fn get_user_component_xattr(file: &ostree::RepoFile) -> std::io::Result<Option<String>> {
@@ -213,9 +166,10 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
         path_components: Default::default(),
         skip: Default::default(),
         component_ids: Default::default(),
-        pacmanSize: 0,
+        pacman_size: 0,
     };
 
+    // unpackaged_id musi być w secie — pliki bez właściciela trafiają do tego bucketa
     state.packagemeta.insert(ObjectSourceMeta {
         identifier: Rc::clone(&state.unpackaged_id),
         name: Rc::clone(&state.unpackaged_id),
@@ -227,12 +181,14 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
     // ───────── PACMAN DB ─────────
     let db_path = opt.pacman_db_path;
     println!("pacman db path = {}", db_path);
-    println!("pacman db exists = {}", db_path.exists());
 
     if !db_path.exists() {
         return Err(anyhow!("Pacman DB path missing: {}", db_path));
     }
 
+    // Mapa nevra -> (desc, files_path).
+    // Jednocześnie od razu dodajemy każdy pakiet do packagemeta.set,
+    // żeby ObjectMetaSized::compute_sizes nie zgłaszał "Failed to find X in content set".
     let mut package_meta: HashMap<Rc<str>, (DbDescFileV1, Utf8PathBuf)> = HashMap::new();
 
     for entry in std::fs::read_dir(&db_path)? {
@@ -248,11 +204,25 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
         let desc_data = std::fs::read_to_string(&desc_path)?;
         let desc = DbDescFileV1::from_str(&desc_data)?;
 
-        let nevra = Rc::from(format!("{}-{}", desc.name, desc.version).into_boxed_str());
-        state.pacmanSize += desc.size;
+        let nevra: Rc<str> = Rc::from(
+            format!("{}-{}", desc.name, desc.version).into_boxed_str()
+        );
+
+        state.pacman_size += desc.size;
+
+        // Każdy pakiet musi być w packagemeta.set, inaczej compute_sizes zwróci błąd
+        // dla każdego pliku przypisanego do tego pakietu w ObjectMeta.map.
+        state.packagemeta.insert(ObjectSourceMeta {
+            identifier: Rc::clone(&nevra),
+            name: Rc::from(desc.name.as_ref()),
+            srcid: Rc::clone(&nevra),
+            // Pakiety instalowane rzadko zmieniają się razem — niski offset, wysoka częstość
+            change_time_offset: 0,
+            change_frequency: 1,
+        });
 
         let files_utf8 = Utf8PathBuf::from_path_buf(files_path)
-            .map_err(|pb| anyhow!("Nieprawidłowa ścieżka UTF-8: {:?}", pb))?;
+            .map_err(|pb| anyhow!("Invalid UTF-8 path: {:?}", pb))?;
 
         package_meta.insert(nevra, (desc, files_utf8));
     }
@@ -278,7 +248,6 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
                 if ostree_paths.path.is_regular() || ostree_paths.path.is_symlink() {
                     let checksum = ostree_paths.path.checksum().to_string();
 
-                    // 🔥 KLUCZOWY FIX — używamy path zamiast peek_path()
                     state
                         .checksum_paths
                         .entry(checksum.clone())
@@ -362,7 +331,7 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
 
     recurse(&mut Utf8PathBuf::from("/"), &root, &mut state, None)?;
 
-    // ───────── META ─────────
+    // ───────── META KOMPONENTÓW ─────────
     for component_name in state.component_ids.iter() {
         let component_id = Rc::from(component_name.clone());
         let component_srcid = Rc::from(format!("component:{}", component_name));
