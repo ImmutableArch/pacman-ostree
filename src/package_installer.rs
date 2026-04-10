@@ -236,7 +236,11 @@ pub async fn unpack_packages(install_result: &InstallResult, dest: &str) -> anyh
 
     println!("Writing Pacman Database...");
     for package_info in &install_result.packages {
-        write_package_to_database(package_info, dest).await.ok();
+        let files_for_pkg: Vec<String> = installed_files.iter()
+            .filter(|p| p.contains(&package_info.package.name))
+            .cloned()
+            .collect();
+        write_package_to_database(package_info, dest, &files_for_pkg).await.ok();
     }
 
     cleanup_special_files(dest)?;
@@ -342,6 +346,7 @@ fn collect_installed_files(
 pub async fn write_package_to_database(
     pkg_info: &PackageInfo,
     dest: &str,
+    files: &[String],
 ) -> anyhow::Result<()> {
     let pkg = &pkg_info.package;
 
@@ -397,9 +402,21 @@ format!(
         )
     )?;
 
+    let mut files_clean: Vec<String> = files
+        .iter()
+        .map(|f| f.trim_start_matches('.').trim_start_matches('/').to_string())
+        .filter(|f| !f.is_empty())
+        .collect();
+
+    files_clean.sort();
+    files_clean.dedup();
+
     fs::write(
-        format!("{}/files", db_dir),
-        "%FILES%\n\n"
+    format!("{}/files", db_dir),
+format!(
+            "%FILES%\n{}\n",
+            files_clean.join("\n")
+        )
     )?;
 
     Ok(())
