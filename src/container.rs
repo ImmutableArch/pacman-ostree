@@ -190,8 +190,15 @@ fn get_user_component_xattr(file: &ostree::RepoFile) -> std::io::Result<Option<S
 }
 
 pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Result<()> {
-    use crate::fsutil::FileHelpers; // zapewnia .is_regular() i .is_symlink()
+    use crate::fsutil::FileHelpers;
     use anyhow::Context;
+
+    fn normalize_component(v: Option<String>) -> Option<String> {
+        v.and_then(|s| {
+            let s = s.trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        })
+    }
 
     let opt = args;
     let repo = &ostree_ext::cli::parse_repo(&opt.repo)?;
@@ -217,7 +224,7 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
         change_frequency: u32::MAX,
     });
 
-    // Wczytaj paczki z bazy
+    // ───────── PACMAN DB ─────────
     let db_path = opt.pacman_db_path;
     println!("pacman db path = {}", db_path);
     println!("pacman db exists = {}", db_path.exists());
@@ -225,6 +232,7 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
     if !db_path.exists() {
         return Err(anyhow!("Pacman DB path missing: {}", db_path));
     }
+
     let mut package_meta: HashMap<Rc<str>, (DbDescFileV1, Utf8PathBuf)> = HashMap::new();
 
     for entry in std::fs::read_dir(&db_path)? {
@@ -232,32 +240,32 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
         let pkg_dir = entry.path();
         let desc_path = pkg_dir.join("desc");
         let files_path = pkg_dir.join("files");
+
         if !desc_path.exists() || !files_path.exists() {
             continue;
         }
 
         let desc_data = std::fs::read_to_string(&desc_path)?;
         let desc = DbDescFileV1::from_str(&desc_data)?;
+
         let nevra = Rc::from(format!("{}-{}", desc.name, desc.version).into_boxed_str());
         state.pacmanSize += desc.size;
 
-        // Konwersja PathBuf → Utf8PathBuf
         let files_utf8 = Utf8PathBuf::from_path_buf(files_path)
-            .map_err(|pb| anyhow::anyhow!("Nieprawidłowa ścieżka UTF-8: {:?}", pb))?;
+            .map_err(|pb| anyhow!("Nieprawidłowa ścieżka UTF-8: {:?}", pb))?;
+
         package_meta.insert(nevra, (desc, files_utf8));
     }
 
     let mut dir_cache: HashMap<Utf8PathBuf, ResolvedOstreePaths> = HashMap::new();
 
-    // Iteruj pliki paczek
+    // ───────── MAPOWANIE PACZEK ─────────
     for (nevra, (_desc, files_path)) in package_meta.iter() {
-        // Wczytaj cały plik `files` jako tekst
         let files_data = std::fs::read_to_string(files_path)?;
-        // Parsuj jako linie, pomiń nagłówek "%FILES%"
+
         for line in files_data.lines().skip(1) {
             let rel_path = line.trim();
             if rel_path.is_empty() { continue; }
-            // Jeśli to katalog, pomiń
             if rel_path.ends_with('/') { continue; }
 
             let path = Utf8PathBuf::from("/").join(rel_path);
@@ -267,24 +275,19 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
                 root.downcast_ref::<ostree::RepoFile>().unwrap(),
                 &mut dir_cache,
             ) {
-                // is_regular i is_symlink z trait FileHelpers
                 if ostree_paths.path.is_regular() || ostree_paths.path.is_symlink() {
-                    // peek_path() może zwrócić PathBuf, więc konwertujemy ręcznie
-                    let real_path_utf8 = Utf8PathBuf::from_path_buf(
-                        ostree_paths.path.peek_path().unwrap()
-                    ).map_err(|pb| anyhow::anyhow!("Nieprawidłowa ścieżka UTF-8: {:?}", pb))?;
-
                     let checksum = ostree_paths.path.checksum().to_string();
 
+                    // 🔥 KLUCZOWY FIX — używamy path zamiast peek_path()
                     state
                         .checksum_paths
                         .entry(checksum.clone())
                         .or_default()
-                        .insert(real_path_utf8.clone());
+                        .insert(path.clone());
 
                     state
                         .path_packages
-                        .entry(real_path_utf8)
+                        .entry(path.clone())
                         .or_default()
                         .insert(Rc::clone(nevra));
                 }
@@ -292,12 +295,78 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
         }
     }
 
-    // Reszta funkcji – budowanie map, metadanych komponentów itd.
-    build_fs_mapping_recurse(&mut Utf8PathBuf::from("/"), &root, &mut state, None)?;
+    // ───────── SKAN OSTREE ─────────
+    fn recurse(
+        path: &mut Utf8PathBuf,
+        dir: &gio::File,
+        state: &mut MappingBuilder,
+        parent_component: Option<String>,
+    ) -> Result<()> {
+        let e = dir.enumerate_children(
+            "standard::name,standard::type",
+            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+            gio::Cancellable::NONE,
+        )?;
 
+        for child in e {
+            let childi = child?;
+            let name: Utf8PathBuf = childi.name().try_into()?;
+            let child = dir.child(&name);
+
+            path.push(&name);
+
+            match childi.file_type() {
+                gio::FileType::Regular | gio::FileType::SymbolicLink => {
+                    let child = child.downcast::<ostree::RepoFile>().unwrap();
+
+                    if state.skip.remove(Utf8Path::new(path)) {
+                        path.pop();
+                        continue;
+                    }
+
+                    let file_component = normalize_component(get_user_component_xattr(&child)?);
+                    let effective_component = file_component
+                        .or_else(|| normalize_component(parent_component.clone()));
+
+                    if let Some(component_name) = effective_component {
+                        let component_id = Rc::from(component_name.clone());
+                        state.component_ids.insert(component_name);
+                        state.path_components
+                            .entry(path.clone())
+                            .or_default()
+                            .insert(Rc::clone(&component_id));
+                    }
+
+                    let checksum = child.checksum().to_string();
+                    state.checksum_paths.entry(checksum).or_default().insert(path.clone());
+                }
+
+                gio::FileType::Directory => {
+                    let child_repo_file = child.clone().downcast::<ostree::RepoFile>().unwrap();
+
+                    let dir_component = normalize_component(get_user_component_xattr(&child_repo_file)?);
+                    let effective_component = dir_component
+                        .or_else(|| normalize_component(parent_component.clone()));
+
+                    recurse(path, &child, state, effective_component)?;
+                }
+
+                o => anyhow::bail!("Unhandled file type: {o:?}"),
+            }
+
+            path.pop();
+        }
+
+        Ok(())
+    }
+
+    recurse(&mut Utf8PathBuf::from("/"), &root, &mut state, None)?;
+
+    // ───────── META ─────────
     for component_name in state.component_ids.iter() {
         let component_id = Rc::from(component_name.clone());
         let component_srcid = Rc::from(format!("component:{}", component_name));
+
         state.componentmeta.insert(ObjectSourceMeta {
             identifier: component_id,
             name: Rc::from(component_name.clone()),
@@ -310,62 +379,28 @@ pub async fn container_encapsulate(args: ContainerEncapsulateOpts) -> anyhow::Re
     let (package_meta_obj, component_content_map) = state.create_meta();
     let package_meta_sized = ObjectMetaSized::compute_sizes(repo, package_meta_obj)?;
 
-    if let Some(v) = opt.write_contentmeta_json {
-        let v = v.strip_prefix("/").unwrap_or(&v);
-        let root_dir = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
-        root_dir.atomic_replace_with(v, |w| {
-            serde_json::to_writer(w, &package_meta_sized.sizes).map_err(anyhow::Error::msg)
-        })?;
-    }
+    // ───────── OCI EXPORT ─────────
+    let config = Config {
+        labels: Some(BTreeMap::new()),
+        cmd: opt.cmd,
+    };
 
-    // Pozostała część konfiguracji kontenera …
-    let labels = opt.labels.into_iter()
-        .map(|l| {
-            let (k, v) = l.split_once('=').ok_or_else(|| anyhow::anyhow!("Missing '=' in label {}", l))?;
-            Ok((k.to_string(), v.to_string()))
-        })
-        .collect::<anyhow::Result<_>>()?;
-
-    let package_structure = opt.previous_build_manifest.as_ref()
-        .map(|p| oci_spec::image::ImageManifest::from_file(p)
-             .map_err(|e| anyhow::anyhow!("Failed to read previous manifest {}: {}", p, e)))
-        .transpose()?;
-
-    let copy_meta_opt_keys = opt.copy_meta_opt_keys.into_iter()
-        .chain(std::iter::once("rpmostree.inputhash".to_owned()))
-        .collect();
-
-    let config = Config { labels: Some(labels), cmd: opt.cmd };
     let mut opts = ExportOpts::default();
-    opts.copy_meta_keys = opt.copy_meta_keys;
-    opts.copy_meta_opt_keys = copy_meta_opt_keys;
     opts.max_layers = opt.max_layers;
-    opts.prior_build = package_structure.as_ref();
     opts.package_contentmeta = Some(&package_meta_sized);
     opts.specific_contentmeta = Some(&component_content_map);
 
-    if let Some(config_path) = opt.image_config.as_deref() {
-        let config_json = serde_json::from_reader(BufReader::new(File::open(config_path)?))?;
-        opts.container_config = Some(config_json);
-    }
-
-    if let Some(arch) = opt.arch.as_ref() {
-        let platform = PlatformBuilder::default()
-            .architecture(arch.clone())
-            .os(Os::default())
-            .build()
-            .unwrap();
-        opts.platform = Some(platform);
-    }
-
-    if opt.format_version >= 2 {
-        opts.tar_create_parent_dirs = true;
-    }
-
     println!("Generating container image");
-    let digest = ostree_ext::container::encapsulate(repo, _rev.as_str(), &config, Some(opts), &opt.imgref)
-        .await
-        .context("Encapsulating")?;
+
+    let digest = ostree_ext::container::encapsulate(
+        repo,
+        _rev.as_str(),
+        &config,
+        Some(opts),
+        &opt.imgref,
+    )
+    .await
+    .context("Encapsulating")?;
 
     println!("Pushed digest: {}", digest);
     Ok(())
